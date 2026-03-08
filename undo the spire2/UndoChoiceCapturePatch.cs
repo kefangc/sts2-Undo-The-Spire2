@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -22,7 +22,7 @@ public static class UndoChoiceCapturePatch
     [HarmonyPrefix]
     public static void HandChoicePrefix(PlayerChoiceContext context, Player player, CardSelectorPrefs prefs, Func<CardModel, bool>? filter, AbstractModel source)
     {
-        MainFile.Controller.RegisterPendingHandChoice(player, prefs, filter);
+        MainFile.Controller.RegisterPendingHandChoice(player, prefs, filter, source);
     }
 
     [HarmonyPatch(typeof(CardSelectCmd), nameof(CardSelectCmd.FromSimpleGrid))]
