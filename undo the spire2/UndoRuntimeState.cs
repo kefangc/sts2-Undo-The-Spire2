@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Enchantments;
@@ -33,6 +33,29 @@ internal sealed class UndoEnchantmentRuntimeState
     public EnchantmentStatus Status { get; init; }
 }
 
+internal sealed class UndoNamedBoolState
+{
+    public required string Name { get; init; }
+
+    public bool Value { get; init; }
+}
+
+internal sealed class UndoNamedIntState
+{
+    public required string Name { get; init; }
+
+    public int Value { get; init; }
+}
+
+internal sealed class UndoNamedEnumState
+{
+    public required string Name { get; init; }
+
+    public required string EnumTypeName { get; init; }
+
+    public int Value { get; init; }
+}
+
 internal sealed class UndoPowerRuntimeState
 {
     public required string OwnerCreatureKey { get; init; }
@@ -46,6 +69,12 @@ internal sealed class UndoPowerRuntimeState
     public string? ApplierCreatureKey { get; init; }
 
     public SerializableCard? StolenCard { get; init; }
+
+    public IReadOnlyList<UndoNamedBoolState> BoolProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedEnumState> EnumProperties { get; init; } = [];
 }
 
 internal sealed class UndoRelicRuntimeState
@@ -59,6 +88,12 @@ internal sealed class UndoRelicRuntimeState
     public RelicStatus Status { get; init; }
 
     public bool? IsActivating { get; init; }
+
+    public IReadOnlyList<UndoNamedBoolState> BoolProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedEnumState> EnumProperties { get; init; } = [];
 }
 
 internal sealed class UndoSelectionSessionState
@@ -72,4 +107,11 @@ internal sealed class UndoSelectionSessionState
     public string? OverlayScreenType { get; init; }
 
     public UndoChoiceSpec? ChoiceSpec { get; init; }
+}
+
+internal sealed class UndoFirstInSeriesPlayCountState
+{
+    public required string CreatureKey { get; init; }
+
+    public int Count { get; init; }
 }

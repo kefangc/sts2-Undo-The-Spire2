@@ -1,7 +1,8 @@
-using System.Reflection;
+﻿using System.Reflection;
 using Godot;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -73,6 +74,10 @@ public sealed class UndoController
     private bool _blockUndoUntilNextPlayerTurn;
     private int _blockedTurnRound = -1;
     private string? _lastRestoreFailureReason;
+    private readonly Dictionary<string, int> _firstInSeriesPlayCountOverrides = [];
+    private int _firstInSeriesPlayCountOverrideRound = -1;
+    private CombatSide _firstInSeriesPlayCountOverrideSide;
+    private bool _hasFirstInSeriesPlayCountOverride;
 
     public event Action? StateChanged;
 
@@ -133,6 +138,65 @@ public sealed class UndoController
         _blockUndoUntilNextPlayerTurn = false;
         _blockedTurnRound = -1;
     }
+    private void ClearFirstInSeriesPlayCountOverrides()
+    {
+        _firstInSeriesPlayCountOverrides.Clear();
+        _firstInSeriesPlayCountOverrideRound = -1;
+        _firstInSeriesPlayCountOverrideSide = default;
+        _hasFirstInSeriesPlayCountOverride = false;
+    }
+
+    private void ApplyFirstInSeriesPlayCountOverrides(UndoCombatFullState snapshot)
+    {
+        ClearFirstInSeriesPlayCountOverrides();
+        _firstInSeriesPlayCountOverrideRound = snapshot.RoundNumber;
+        _firstInSeriesPlayCountOverrideSide = snapshot.CurrentSide;
+        _hasFirstInSeriesPlayCountOverride = true;
+
+        foreach (UndoFirstInSeriesPlayCountState state in snapshot.FirstInSeriesPlayCounts)
+            _firstInSeriesPlayCountOverrides[state.CreatureKey] = state.Count;
+    }
+
+    public void OnCombatHistoryCardPlayStarted(CombatState combatState, CardPlay cardPlay)
+    {
+        if (IsRestoring || !_hasFirstInSeriesPlayCountOverride || !cardPlay.IsFirstInSeries)
+            return;
+
+        if (combatState.RoundNumber != _firstInSeriesPlayCountOverrideRound || combatState.CurrentSide != _firstInSeriesPlayCountOverrideSide)
+        {
+            ClearFirstInSeriesPlayCountOverrides();
+            return;
+        }
+
+        string? creatureKey = TryResolveCreatureKey(combatState.Creatures, cardPlay.Card.Owner?.Creature);
+        if (string.IsNullOrWhiteSpace(creatureKey))
+            return;
+
+        _firstInSeriesPlayCountOverrides[creatureKey] = _firstInSeriesPlayCountOverrides.TryGetValue(creatureKey, out int existingCount)
+            ? existingCount + 1
+            : 1;
+    }
+
+    public bool TryOverrideEchoFormModifyCardPlayCount(EchoFormPower power, CardModel card, int playCount, out int result)
+    {
+        result = 0;
+        if (!_hasFirstInSeriesPlayCountOverride || power.Owner == null || card.Owner?.Creature != power.Owner || power.CombatState == null)
+            return false;
+
+        CombatState combatState = power.CombatState;
+        if (combatState.RoundNumber != _firstInSeriesPlayCountOverrideRound || combatState.CurrentSide != _firstInSeriesPlayCountOverrideSide)
+        {
+            ClearFirstInSeriesPlayCountOverrides();
+            return false;
+        }
+
+        string? creatureKey = TryResolveCreatureKey(combatState.Creatures, power.Owner);
+        int playCountSoFar = string.IsNullOrWhiteSpace(creatureKey) || !_firstInSeriesPlayCountOverrides.TryGetValue(creatureKey, out int overrideCount)
+            ? 0
+            : overrideCount;
+        result = playCountSoFar >= power.Amount ? playCount : playCount + 1;
+        return true;
+    }
     private bool IsUndoRedoTemporarilyBlocked(NCombatUi combatUi)
     {
         if (!_blockUndoUntilNextPlayerTurn)
@@ -184,6 +248,7 @@ public sealed class UndoController
         _futureSnapshots.Clear();
         _nextSequenceId = 1;
         ClearTurnTransitionBlock();
+        ClearFirstInSeriesPlayCountOverrides();
         MainFile.Logger.Info("Initialized combat replay state for undo.");
         NotifyStateChanged();
     }
@@ -1891,6 +1956,7 @@ public sealed class UndoController
             RestoreActionSynchronizationState(snapshot.SynchronizerCombatState);
             RebuildTransientCombatCaches(runState);
             NormalizeRelicInventoryUi(runState);
+            ApplyFirstInSeriesPlayCountOverrides(snapshot);
 
             foreach (Player player in runState.Players)
             {
@@ -2335,6 +2401,7 @@ public sealed class UndoController
                 await WaitOneFrameAsync();
                 await WaitOneFrameAsync();
                 InvokePrivateMethod(hand, "CancelHandSelectionIfNecessary");
+                InvokePrivateMethod(hand, "OnSelectModeSourceFinished", [null]);
                 ResetPlayerHandUi(hand);
                 SetPrivateFieldValue(hand, "_selectionCompletionSource", null);
             }
@@ -2450,6 +2517,7 @@ public sealed class UndoController
         _lastResolvedChoiceResultKey = null;
         _syntheticChoiceSession = null;
         ClearTurnTransitionBlock();
+        ClearFirstInSeriesPlayCountOverrides();
         if (_pastSnapshots.Count == 0 && _futureSnapshots.Count == 0)
             return;
 
@@ -2527,7 +2595,8 @@ public sealed class UndoController
             CaptureCardRuntimeStates(runState),
             CapturePowerRuntimeStates(combatState.Creatures),
             CaptureRelicRuntimeStates(runState),
-            CaptureSelectionSessionState());
+            CaptureSelectionSessionState(),
+            CaptureFirstInSeriesPlayCounts(combatState));
     }
 
     private static IReadOnlyList<UndoMonsterState> CaptureMonsterStates(IReadOnlyList<Creature> creatures)
@@ -2678,14 +2747,16 @@ public sealed class UndoController
                     ApplierCreatureKey = TryResolveCreatureKey(creatures, power.Applier),
                     StolenCard = power is SwipePower swipe && swipe.StolenCard != null
                         ? ClonePacketSerializable(swipe.StolenCard.ToSerializable())
-                        : null
+                        : null,
+                    BoolProperties = CaptureRuntimeBoolProperties(power, "Target", "Applier"),
+                    IntProperties = CaptureRuntimeIntProperties(power, "Amount"),
+                    EnumProperties = CaptureRuntimeEnumProperties(power)
                 });
             }
         }
 
         return states;
     }
-
     private static IReadOnlyList<UndoRelicRuntimeState> CaptureRelicRuntimeStates(RunState runState)
     {
         List<UndoRelicRuntimeState> states = [];
@@ -2702,14 +2773,16 @@ public sealed class UndoController
                     RelicId = relic.Id,
                     Ordinal = ordinal,
                     Status = relic.Status,
-                    IsActivating = FindProperty(relic.GetType(), "IsActivating")?.GetValue(relic) is bool activating ? activating : null
+                    IsActivating = FindProperty(relic.GetType(), "IsActivating")?.GetValue(relic) is bool activating ? activating : null,
+                    BoolProperties = CaptureRuntimeBoolProperties(relic, "IsActivating"),
+                    IntProperties = CaptureRuntimeIntProperties(relic),
+                    EnumProperties = CaptureRuntimeEnumProperties(relic)
                 });
             }
         }
 
         return states;
     }
-
     private static UndoSelectionSessionState CaptureSelectionSessionState()
     {
         NCombatUi? combatUi = NCombatRoom.Instance?.Ui;
@@ -2724,6 +2797,98 @@ public sealed class UndoController
         };
     }
 
+    private static IReadOnlyList<UndoFirstInSeriesPlayCountState> CaptureFirstInSeriesPlayCounts(CombatState combatState)
+    {
+        List<UndoFirstInSeriesPlayCountState> states = [];
+        IReadOnlyList<Creature> creatures = combatState.Creatures;
+        foreach (CardPlayStartedEntry entry in CombatManager.Instance.History.CardPlaysStarted)
+        {
+            if (!entry.HappenedThisTurn(combatState) || !entry.CardPlay.IsFirstInSeries)
+                continue;
+
+            string? creatureKey = TryResolveCreatureKey(creatures, entry.Actor);
+            if (string.IsNullOrWhiteSpace(creatureKey))
+                continue;
+
+            UndoFirstInSeriesPlayCountState? existing = states.FirstOrDefault(static state => false);
+            for (int i = 0; i < states.Count; i++)
+            {
+                if (states[i].CreatureKey != creatureKey)
+                    continue;
+
+                states[i] = new UndoFirstInSeriesPlayCountState
+                {
+                    CreatureKey = creatureKey,
+                    Count = states[i].Count + 1
+                };
+                creatureKey = null;
+                break;
+            }
+
+            if (!string.IsNullOrWhiteSpace(creatureKey))
+            {
+                states.Add(new UndoFirstInSeriesPlayCountState
+                {
+                    CreatureKey = creatureKey,
+                    Count = 1
+                });
+            }
+        }
+
+        return states;
+    }
+
+    private static IReadOnlyList<UndoNamedBoolState> CaptureRuntimeBoolProperties(object model, params string[] excludedNames)
+    {
+        HashSet<string> excluded = [.. excludedNames];
+        return GetRuntimeStateProperties(model.GetType())
+            .Where(property => property.PropertyType == typeof(bool) && !excluded.Contains(property.Name))
+            .Select(property => new UndoNamedBoolState
+            {
+                Name = property.Name,
+                Value = property.GetValue(model) is bool value && value
+            })
+            .ToList();
+    }
+
+    private static IReadOnlyList<UndoNamedIntState> CaptureRuntimeIntProperties(object model, params string[] excludedNames)
+    {
+        HashSet<string> excluded = [.. excludedNames];
+        return GetRuntimeStateProperties(model.GetType())
+            .Where(property => property.PropertyType == typeof(int) && !excluded.Contains(property.Name))
+            .Select(property => new UndoNamedIntState
+            {
+                Name = property.Name,
+                Value = property.GetValue(model) is int value ? value : 0
+            })
+            .ToList();
+    }
+
+    private static IReadOnlyList<UndoNamedEnumState> CaptureRuntimeEnumProperties(object model, params string[] excludedNames)
+    {
+        HashSet<string> excluded = [.. excludedNames];
+        return GetRuntimeStateProperties(model.GetType())
+            .Where(property => property.PropertyType.IsEnum && !excluded.Contains(property.Name))
+            .Select(property => new UndoNamedEnumState
+            {
+                Name = property.Name,
+                EnumTypeName = property.PropertyType.AssemblyQualifiedName ?? property.PropertyType.FullName ?? property.PropertyType.Name,
+                Value = Convert.ToInt32(property.GetValue(model))
+            })
+            .ToList();
+    }
+
+    private static IEnumerable<PropertyInfo> GetRuntimeStateProperties(Type type)
+    {
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        return type
+            .GetProperties(Flags)
+            .Where(static property => property.GetIndexParameters().Length == 0)
+            .Where(static property => property.CanRead)
+            .Where(property => property.GetMethod != null)
+            .Where(property => property.SetMethod != null || FindField(type, $"<{property.Name}>k__BackingField") != null)
+            .Where(static property => property.Name != "Status");
+    }
     private static UndoCardCostState CaptureCardCostState(CardModel card)
     {
         CardEnergyCost energyCost = card.EnergyCost;
@@ -2835,9 +3000,62 @@ public sealed class UndoController
                 if (!TrySetPrivateAutoPropertyBackingField(relic, "IsActivating", runtimeState.IsActivating.Value))
                     SetPrivatePropertyValue(relic, "IsActivating", runtimeState.IsActivating.Value);
             }
+
+            RestoreRuntimeBoolProperties(relic, runtimeState.BoolProperties);
+            RestoreRuntimeIntProperties(relic, runtimeState.IntProperties);
+            RestoreRuntimeEnumProperties(relic, runtimeState.EnumProperties);
         }
     }
 
+    private static void RestoreRuntimeBoolProperties(object target, IReadOnlyList<UndoNamedBoolState> states)
+    {
+        foreach (UndoNamedBoolState state in states)
+        {
+            PropertyInfo? property = FindProperty(target.GetType(), state.Name);
+            if (property != null && property.PropertyType == typeof(bool))
+            {
+                if (!TrySetPrivateAutoPropertyBackingField(target, state.Name, state.Value))
+                    SetPrivatePropertyValue(target, state.Name, state.Value);
+                continue;
+            }
+
+            FieldInfo? field = FindField(target.GetType(), state.Name);
+            if (field != null && field.FieldType == typeof(bool))
+                field.SetValue(target, state.Value);
+        }
+    }
+
+    private static void RestoreRuntimeIntProperties(object target, IReadOnlyList<UndoNamedIntState> states)
+    {
+        foreach (UndoNamedIntState state in states)
+        {
+            PropertyInfo? property = FindProperty(target.GetType(), state.Name);
+            if (property != null && property.PropertyType == typeof(int))
+            {
+                if (!TrySetPrivateAutoPropertyBackingField(target, state.Name, state.Value))
+                    SetPrivatePropertyValue(target, state.Name, state.Value);
+                continue;
+            }
+
+            FieldInfo? field = FindField(target.GetType(), state.Name);
+            if (field != null && field.FieldType == typeof(int))
+                field.SetValue(target, state.Value);
+        }
+    }
+
+    private static void RestoreRuntimeEnumProperties(object target, IReadOnlyList<UndoNamedEnumState> states)
+    {
+        foreach (UndoNamedEnumState state in states)
+        {
+            PropertyInfo? property = FindProperty(target.GetType(), state.Name);
+            if (property == null || !property.PropertyType.IsEnum)
+                continue;
+
+            object value = Enum.ToObject(property.PropertyType, state.Value);
+            if (!TrySetPrivateAutoPropertyBackingField(target, state.Name, value))
+                SetPrivatePropertyValue(target, state.Name, value);
+        }
+    }
     private static void RestorePotions(Player player, NetFullCombatState.PlayerState playerState)
     {
         int maxPotionDelta = playerState.maxPotionCount - player.MaxPotionCount;
@@ -3423,6 +3641,9 @@ public sealed class UndoController
 
                 power.Target = ResolveCreatureByKey(creaturesByKey, runtimeState.TargetCreatureKey);
                 power.Applier = ResolveCreatureByKey(creaturesByKey, runtimeState.ApplierCreatureKey);
+                RestoreRuntimeBoolProperties(power, runtimeState.BoolProperties);
+                RestoreRuntimeIntProperties(power, runtimeState.IntProperties);
+                RestoreRuntimeEnumProperties(power, runtimeState.EnumProperties);
                 if (power is not SwipePower swipe)
                     continue;
 
@@ -3439,7 +3660,6 @@ public sealed class UndoController
             }
         }
     }
-
     private static Dictionary<string, Creature> BuildCreatureKeyMap(IReadOnlyList<Creature> creatures)
     {
         Dictionary<string, Creature> creaturesByKey = [];
@@ -3600,7 +3820,10 @@ public sealed class UndoController
             if (creatureNode == null)
                 continue;
 
-            Marker2D? stolenCardPos = creatureNode.GetSpecialNode<Marker2D>("%StolenCardPos");
+            if (!creatureNode.HasNode("%StolenCardPos"))
+                continue;
+
+            Marker2D? stolenCardPos = creatureNode.GetNodeOrNull<Marker2D>("%StolenCardPos");
             if (stolenCardPos == null)
                 continue;
 
@@ -3773,6 +3996,7 @@ public sealed class UndoController
 
         GetPrivateFieldValue<System.Collections.IDictionary>(hand, "_holdersAwaitingQueue")?.Clear();
         GetPrivateFieldValue<System.Collections.IList>(hand, "_selectedCards")?.Clear();
+        InvokePrivateMethod(hand, "OnSelectModeSourceFinished", [null]);
         SetPrivateFieldValue(hand, "_currentCardPlay", null);
         SetPrivateFieldValue(hand, "_draggedHolderIndex", -1);
         SetPrivateFieldValue(hand, "_lastFocusedHolderIdx", -1);
@@ -4053,7 +4277,8 @@ public sealed class UndoController
             source.CardRuntimeStates,
             source.PowerRuntimeStates,
             source.RelicRuntimeStates,
-            source.SelectionSessionState);
+            source.SelectionSessionState,
+            source.FirstInSeriesPlayCounts);
     }
 
     private static SerializableRun CloneRun(SerializableRun run)
@@ -4197,6 +4422,16 @@ public sealed class UndoController
 
     private sealed record SyntheticTransformVfxCard(SerializableCard Card, int SourcePileIndex);
 }
+
+
+
+
+
+
+
+
+
+
 
 
 

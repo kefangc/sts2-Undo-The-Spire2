@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
@@ -21,7 +21,8 @@ internal sealed class UndoCombatFullState
         IReadOnlyList<UndoPlayerPileCardRuntimeState>? cardRuntimeStates = null,
         IReadOnlyList<UndoPowerRuntimeState>? powerRuntimeStates = null,
         IReadOnlyList<UndoRelicRuntimeState>? relicRuntimeStates = null,
-        UndoSelectionSessionState? selectionSessionState = null)
+        UndoSelectionSessionState? selectionSessionState = null,
+        IReadOnlyList<UndoFirstInSeriesPlayCountState>? firstInSeriesPlayCounts = null)
     {
         FullState = fullState;
         RoundNumber = roundNumber;
@@ -36,6 +37,7 @@ internal sealed class UndoCombatFullState
         PowerRuntimeStates = powerRuntimeStates ?? [];
         RelicRuntimeStates = relicRuntimeStates ?? [];
         SelectionSessionState = selectionSessionState;
+        FirstInSeriesPlayCounts = firstInSeriesPlayCounts ?? [];
     }
 
     public NetFullCombatState FullState { get; }
@@ -63,6 +65,8 @@ internal sealed class UndoCombatFullState
     public IReadOnlyList<UndoRelicRuntimeState> RelicRuntimeStates { get; }
 
     public UndoSelectionSessionState? SelectionSessionState { get; }
+
+    public IReadOnlyList<UndoFirstInSeriesPlayCountState> FirstInSeriesPlayCounts { get; }
 }
 
 internal sealed class UndoPlayerPileCardCostState
