@@ -1,10 +1,11 @@
-﻿using MegaCrit.Sts2.Core.Combat;
+using System.Collections.Generic;
+using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 
 namespace UndoTheSpire2;
 
-public sealed class UndoCombatFullState
+internal sealed class UndoCombatFullState
 {
     public UndoCombatFullState(
         NetFullCombatState fullState,
@@ -13,7 +14,8 @@ public sealed class UndoCombatFullState
         ActionSynchronizerCombatState synchronizerCombatState,
         uint nextActionId,
         uint nextHookId,
-        uint nextChecksumId)
+        uint nextChecksumId,
+        IReadOnlyList<UndoMonsterState> monsterStates)
     {
         FullState = fullState;
         RoundNumber = roundNumber;
@@ -22,6 +24,7 @@ public sealed class UndoCombatFullState
         NextActionId = nextActionId;
         NextHookId = nextHookId;
         NextChecksumId = nextChecksumId;
+        MonsterStates = monsterStates;
     }
 
     public NetFullCombatState FullState { get; }
@@ -37,4 +40,6 @@ public sealed class UndoCombatFullState
     public uint NextHookId { get; }
 
     public uint NextChecksumId { get; }
+
+    public IReadOnlyList<UndoMonsterState> MonsterStates { get; }
 }

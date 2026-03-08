@@ -3,6 +3,46 @@
   "WorkspaceRootPath": "C:\\Users\\21253\\source\\repos\\undo the spire2\\",
   "Documents": [
     {
+      "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\undoactionkind.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\undoactionkind.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\modlocalization.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\modlocalization.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\mainfile.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\mainfile.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\undodebuglog.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\undodebuglog.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\undocombatuipatch.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\undocombatuipatch.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\undocontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\undocontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\undocombatfullstate.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\undocombatfullstate.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\undochoicecapturepatch.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\undochoicecapturepatch.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\undochoicekind.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\undochoicekind.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\undoactioncapturepatch.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\undoactioncapturepatch.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
       "AbsoluteMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|c:\\users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\mod_manifest.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}",
       "RelativeMoniker": "D:0:0:{32C7BC37-430A-4BBB-B90A-BB636E6D4F22}|undo the spire2\\undo the spire2.csproj|solutionrelative:undo the spire2\\mod_manifest.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}"
     },
@@ -22,7 +62,7 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 5,
+          "SelectedChildIndex": 12,
           "Children": [
             {
               "$type": "Bookmark",
@@ -46,7 +86,133 @@
             },
             {
               "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "ModLocalization.cs",
+              "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\ModLocalization.cs",
+              "RelativeDocumentMoniker": "undo the spire2\\ModLocalization.cs",
+              "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\ModLocalization.cs",
+              "RelativeToolTip": "undo the spire2\\ModLocalization.cs",
+              "ViewState": "AgIAAFcAAAAAAAAAAAAcwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-03-07T15:07:37.629Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "MainFile.cs",
+              "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\MainFile.cs",
+              "RelativeDocumentMoniker": "undo the spire2\\MainFile.cs",
+              "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\MainFile.cs",
+              "RelativeToolTip": "undo the spire2\\MainFile.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAADwvwAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-03-07T15:07:33.791Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "UndoDebugLog.cs",
+              "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoDebugLog.cs",
+              "RelativeDocumentMoniker": "undo the spire2\\UndoDebugLog.cs",
+              "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoDebugLog.cs",
+              "RelativeToolTip": "undo the spire2\\UndoDebugLog.cs",
+              "ViewState": "AgIAADoAAAAAAAAAAAAYwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-03-07T15:07:27.489Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "UndoCombatUiPatch.cs",
+              "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoCombatUiPatch.cs",
+              "RelativeDocumentMoniker": "undo the spire2\\UndoCombatUiPatch.cs",
+              "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoCombatUiPatch.cs",
+              "RelativeToolTip": "undo the spire2\\UndoCombatUiPatch.cs",
+              "ViewState": "AgIAACkAAAAAAAAAAAAUwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-03-07T15:07:22.448Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
+              "Title": "UndoController.cs",
+              "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoController.cs",
+              "RelativeDocumentMoniker": "undo the spire2\\UndoController.cs",
+              "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoController.cs",
+              "RelativeToolTip": "undo the spire2\\UndoController.cs",
+              "ViewState": "AgIAAMMJAAAAAAAAAAAYwMwJAAABAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-03-07T13:48:45.493Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 7,
+              "Title": "UndoChoiceCapturePatch.cs",
+              "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoChoiceCapturePatch.cs",
+              "RelativeDocumentMoniker": "undo the spire2\\UndoChoiceCapturePatch.cs",
+              "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoChoiceCapturePatch.cs",
+              "RelativeToolTip": "undo the spire2\\UndoChoiceCapturePatch.cs",
+              "ViewState": "AgIAABgAAAAAAAAAAAAQwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-03-07T13:48:38.797Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 8,
+              "Title": "UndoChoiceKind.cs",
+              "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoChoiceKind.cs",
+              "RelativeDocumentMoniker": "undo the spire2\\UndoChoiceKind.cs",
+              "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoChoiceKind.cs",
+              "RelativeToolTip": "undo the spire2\\UndoChoiceKind.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAADwvwAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-03-07T13:48:35.799Z"
+            },
+            {
+              "$type": "Document",
               "DocumentIndex": 0,
+              "Title": "UndoActionKind.cs",
+              "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoActionKind.cs",
+              "RelativeDocumentMoniker": "undo the spire2\\UndoActionKind.cs",
+              "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoActionKind.cs",
+              "RelativeToolTip": "undo the spire2\\UndoActionKind.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAADwvwAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-03-07T13:48:33.474Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 6,
+              "Title": "UndoCombatFullState.cs",
+              "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoCombatFullState.cs",
+              "RelativeDocumentMoniker": "undo the spire2\\UndoCombatFullState.cs",
+              "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoCombatFullState.cs",
+              "RelativeToolTip": "undo the spire2\\UndoCombatFullState.cs",
+              "ViewState": "AgIAACcAAAAAAAAAAAAkwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-03-07T13:48:41.516Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 9,
+              "Title": "UndoActionCapturePatch.cs",
+              "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoActionCapturePatch.cs",
+              "RelativeDocumentMoniker": "undo the spire2\\UndoActionCapturePatch.cs",
+              "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoActionCapturePatch.cs",
+              "RelativeToolTip": "undo the spire2\\UndoActionCapturePatch.cs",
+              "ViewState": "AgIAABoAAAAAAAAAAAAQwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-03-07T13:48:27.983Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 10,
               "Title": "mod_manifest.json",
               "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\mod_manifest.json",
               "RelativeDocumentMoniker": "undo the spire2\\mod_manifest.json",
@@ -54,12 +220,11 @@
               "RelativeToolTip": "undo the spire2\\mod_manifest.json",
               "ViewState": "AgIAAAAAAAAAAAAAAADwvwQAAABcAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
-              "WhenOpened": "2026-03-07T12:39:02.09Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-03-07T12:39:02.09Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 11,
               "Title": "en.json",
               "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\UndoTheSpire2\\localization\\en.json",
               "RelativeDocumentMoniker": "undo the spire2\\UndoTheSpire2\\localization\\en.json",
@@ -71,7 +236,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 2,
+              "DocumentIndex": 12,
               "Title": "icon.svg",
               "DocumentMoniker": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\icon.svg",
               "RelativeDocumentMoniker": "undo the spire2\\icon.svg",

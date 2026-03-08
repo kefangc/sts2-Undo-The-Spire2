@@ -16,6 +16,7 @@ using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Replay;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
@@ -29,6 +30,8 @@ using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Nodes.Vfx;
+using MegaCrit.Sts2.Core.Nodes.Vfx.Cards;
 using MegaCrit.Sts2.Core.Nodes.Potions;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
@@ -469,6 +472,7 @@ public sealed class UndoController
             }
 
             UndoSnapshot synthesizedBranch = branchSnapshot!;
+            SyntheticChoiceVfxRequest? vfxRequest = CaptureSyntheticChoiceVfxRequest(session, synthesizedBranch, selectedKey);
             _syntheticChoiceSession = null;
             _lastResolvedChoiceSpec = session.ChoiceSpec;
             _lastResolvedChoiceResultKey = selectedKey;
@@ -481,6 +485,8 @@ public sealed class UndoController
 
             _combatReplay!.ActiveEventCount = synthesizedBranch.ReplayEventCount;
             NotifyStateChanged();
+            if (vfxRequest != null)
+                _ = TaskHelper.RunSafely(PlaySyntheticChoiceVfxAsync(vfxRequest));
             MainFile.Logger.Info($"Applied synthesized instant branch {selectedKey} for {session.ChoiceSpec.Kind}.");
         }
         catch (TaskCanceledException)
@@ -573,7 +579,8 @@ public sealed class UndoController
             templateSnapshot.CombatState.SynchronizerCombatState,
             templateSnapshot.CombatState.NextActionId,
             templateSnapshot.CombatState.NextHookId,
-            templateSnapshot.CombatState.NextChecksumId);
+            templateSnapshot.CombatState.NextChecksumId,
+            templateSnapshot.CombatState.MonsterStates);
         return true;
     }
 
@@ -613,19 +620,358 @@ public sealed class UndoController
     {
         combatState = null;
         UndoChoiceResultKey? templateChoiceKey = templateSnapshot.ChoiceResultKey;
-        if (templateChoiceKey == null
-            || templateChoiceKey.OptionIndexes.Count != 1
-            || selectedKey.OptionIndexes.Count != 1)
+        if (templateChoiceKey == null || templateChoiceKey.OptionIndexes.Count == 0)
+            return false;
+
+        if (TryCreateInPlaceSourcePileModificationCombatState(
+                anchorSnapshot,
+                templateSnapshot,
+                templateChoiceKey,
+                selectedKey,
+                sourcePileType,
+                sourcePileOptionIndexes,
+                out combatState))
+        {
+            return true;
+        }
+
+        if (TryCreateLikeTemplateSourcePileSelectionCombatState(
+                anchorSnapshot,
+                templateSnapshot,
+                templateChoiceKey,
+                selectedKey,
+                sourcePileType,
+                sourcePileOptionIndexes,
+                out combatState))
+        {
+            return true;
+        }
+
+        return TryCreateVariableCountSourcePileSelectionCombatState(
+            anchorSnapshot,
+            templateSnapshot,
+            templateChoiceKey,
+            selectedKey,
+            sourcePileType,
+            sourcePileOptionIndexes,
+            out combatState);
+    }
+
+    private static bool TryCreateInPlaceSourcePileModificationCombatState(
+        UndoSnapshot anchorSnapshot,
+        UndoSnapshot templateSnapshot,
+        UndoChoiceResultKey templateChoiceKey,
+        UndoChoiceResultKey selectedKey,
+        PileType sourcePileType,
+        IReadOnlyList<int> sourcePileOptionIndexes,
+        out UndoCombatFullState? combatState)
+    {
+        combatState = null;
+        if (selectedKey.OptionIndexes.Count == 0
+            || selectedKey.OptionIndexes.Count != templateChoiceKey.OptionIndexes.Count)
         {
             return false;
         }
 
-        int selectedOptionIndex = selectedKey.OptionIndexes[0];
-        int templateOptionIndex = templateChoiceKey.OptionIndexes[0];
-        if (selectedOptionIndex < 0 || selectedOptionIndex >= sourcePileOptionIndexes.Count)
+        List<int> selectedOptionIndexes = [.. selectedKey.OptionIndexes];
+        List<int> templateOptionIndexes = [.. templateChoiceKey.OptionIndexes];
+        if (selectedOptionIndexes.Any(index => index < 0 || index >= sourcePileOptionIndexes.Count)
+            || templateOptionIndexes.Any(index => index < 0 || index >= sourcePileOptionIndexes.Count))
+        {
             return false;
-        if (templateOptionIndex < 0 || templateOptionIndex >= sourcePileOptionIndexes.Count)
+        }
+
+        NetFullCombatState fullState = CloneFullState(templateSnapshot.CombatState.FullState);
+        if (!TryGetComparablePlayerStates(anchorSnapshot.CombatState.FullState, fullState, out int playerIndex, out NetFullCombatState.PlayerState anchorPlayerState, out NetFullCombatState.PlayerState branchPlayerState))
             return false;
+
+        NetFullCombatState.PlayerState templatePlayerState = templateSnapshot.CombatState.FullState.Players[playerIndex];
+        int anchorSourcePileIndex = FindPileIndex(anchorPlayerState.piles, sourcePileType);
+        int templateSourcePileIndex = FindPileIndex(templatePlayerState.piles, sourcePileType);
+        int branchSourcePileIndex = FindPileIndex(branchPlayerState.piles, sourcePileType);
+        if (anchorSourcePileIndex < 0 || templateSourcePileIndex < 0 || branchSourcePileIndex < 0)
+            return false;
+
+        NetFullCombatState.CombatPileState anchorSourcePileState = anchorPlayerState.piles[anchorSourcePileIndex];
+        NetFullCombatState.CombatPileState templateSourcePileState = templatePlayerState.piles[templateSourcePileIndex];
+        if (anchorSourcePileState.cards.Count != templateSourcePileState.cards.Count)
+            return false;
+
+        List<int> selectedSourceIndexes = [];
+        List<int> templateSourceIndexes = [];
+        foreach (int optionIndex in selectedOptionIndexes)
+            selectedSourceIndexes.Add(sourcePileOptionIndexes[optionIndex]);
+        foreach (int optionIndex in templateOptionIndexes)
+            templateSourceIndexes.Add(sourcePileOptionIndexes[optionIndex]);
+
+        if (selectedSourceIndexes.Any(index => index < 0 || index >= anchorSourcePileState.cards.Count)
+            || templateSourceIndexes.Any(index => index < 0 || index >= anchorSourcePileState.cards.Count))
+        {
+            return false;
+        }
+
+        List<int> changedSourceIndexes = FindUnmatchedCardIndexes(anchorSourcePileState.cards, templateSourcePileState.cards);
+        if (changedSourceIndexes.Count != templateSourceIndexes.Count)
+            return false;
+
+        changedSourceIndexes.Sort();
+        List<int> sortedTemplateSourceIndexes = [.. templateSourceIndexes.OrderBy(static index => index)];
+        if (!changedSourceIndexes.SequenceEqual(sortedTemplateSourceIndexes))
+            return false;
+
+        List<NetFullCombatState.CardState> templateReplacementStates = templateSourceIndexes
+            .Select(index => ClonePacketSerializable(templateSourcePileState.cards[index]))
+            .ToList();
+
+        NetFullCombatState.CombatPileState branchSourcePileState = ClonePacketSerializable(anchorSourcePileState);
+        for (int i = 0; i < selectedSourceIndexes.Count; i++)
+            branchSourcePileState.cards[selectedSourceIndexes[i]] = ClonePacketSerializable(templateReplacementStates[i]);
+
+        branchPlayerState.piles[branchSourcePileIndex] = branchSourcePileState;
+        fullState.Players[playerIndex] = branchPlayerState;
+        combatState = new UndoCombatFullState(
+            fullState,
+            templateSnapshot.CombatState.RoundNumber,
+            templateSnapshot.CombatState.CurrentSide,
+            templateSnapshot.CombatState.SynchronizerCombatState,
+            templateSnapshot.CombatState.NextActionId,
+            templateSnapshot.CombatState.NextHookId,
+            templateSnapshot.CombatState.NextChecksumId,
+            templateSnapshot.CombatState.MonsterStates);
+        return true;
+    }
+
+    private SyntheticChoiceVfxRequest? CaptureSyntheticChoiceVfxRequest(
+        UndoSyntheticChoiceSession session,
+        UndoSnapshot synthesizedBranch,
+        UndoChoiceResultKey selectedKey)
+    {
+        SyntheticChoiceVfxRequest request = new();
+        TryCaptureExhaustChoiceVfx(session, synthesizedBranch, selectedKey, request);
+        TryCaptureTransformChoiceVfx(session, synthesizedBranch, selectedKey, request);
+        return request.HasEffects ? request : null;
+    }
+
+    private bool TryCaptureExhaustChoiceVfx(
+        UndoSyntheticChoiceSession session,
+        UndoSnapshot synthesizedBranch,
+        UndoChoiceResultKey selectedKey,
+        SyntheticChoiceVfxRequest request)
+    {
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? me = combatState == null ? null : LocalContext.GetMe(combatState);
+        NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        if (me == null
+            || hand == null
+            || choiceSpec.Kind != UndoChoiceKind.HandSelection
+            || choiceSpec.SourcePileType != PileType.Hand
+            || selectedKey.OptionIndexes.Count == 0)
+        {
+            return false;
+        }
+
+        if (!TryGetComparablePlayerStates(
+                session.AnchorSnapshot.CombatState.FullState,
+                synthesizedBranch.CombatState.FullState,
+                out _,
+                out NetFullCombatState.PlayerState anchorPlayerState,
+                out NetFullCombatState.PlayerState branchPlayerState))
+        {
+            return false;
+        }
+
+        int anchorHandPileIndex = FindPileIndex(anchorPlayerState.piles, PileType.Hand);
+        int branchHandPileIndex = FindPileIndex(branchPlayerState.piles, PileType.Hand);
+        int anchorExhaustPileIndex = FindPileIndex(anchorPlayerState.piles, PileType.Exhaust);
+        int branchExhaustPileIndex = FindPileIndex(branchPlayerState.piles, PileType.Exhaust);
+        if (anchorHandPileIndex < 0
+            || branchHandPileIndex < 0
+            || anchorExhaustPileIndex < 0
+            || branchExhaustPileIndex < 0)
+        {
+            return false;
+        }
+
+        int selectedCount = selectedKey.OptionIndexes.Count;
+        NetFullCombatState.CombatPileState anchorHandPileState = anchorPlayerState.piles[anchorHandPileIndex];
+        NetFullCombatState.CombatPileState branchHandPileState = branchPlayerState.piles[branchHandPileIndex];
+        NetFullCombatState.CombatPileState anchorExhaustPileState = anchorPlayerState.piles[anchorExhaustPileIndex];
+        NetFullCombatState.CombatPileState branchExhaustPileState = branchPlayerState.piles[branchExhaustPileIndex];
+        if (anchorHandPileState.cards.Count - branchHandPileState.cards.Count != selectedCount
+            || branchExhaustPileState.cards.Count - anchorExhaustPileState.cards.Count != selectedCount)
+        {
+            return false;
+        }
+
+        IReadOnlyList<CardModel> liveHandCards = PileType.Hand.GetPile(me).Cards;
+        foreach (int optionIndex in selectedKey.OptionIndexes)
+        {
+            if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
+                return false;
+
+            int handIndex = choiceSpec.SourcePileOptionIndexes[optionIndex];
+            if (handIndex < 0 || handIndex >= liveHandCards.Count)
+                return false;
+
+            CardModel liveCard = liveHandCards[handIndex];
+            NCardHolder? holder = hand.GetCardHolder(liveCard);
+            Vector2 globalPosition = holder?.CardNode?.GlobalPosition ?? holder?.GlobalPosition ?? hand.GlobalPosition;
+            request.ExhaustCards.Add(new SyntheticExhaustVfxCard(liveCard.ToSerializable(), globalPosition));
+        }
+
+        return request.ExhaustCards.Count > 0;
+    }
+
+    private bool TryCaptureTransformChoiceVfx(
+        UndoSyntheticChoiceSession session,
+        UndoSnapshot synthesizedBranch,
+        UndoChoiceResultKey selectedKey,
+        SyntheticChoiceVfxRequest request)
+    {
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? me = combatState == null ? null : LocalContext.GetMe(combatState);
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        if (me == null
+            || choiceSpec.SourcePileType == null
+            || selectedKey.OptionIndexes.Count == 0)
+        {
+            return false;
+        }
+
+        if (!TryGetComparablePlayerStates(
+                session.AnchorSnapshot.CombatState.FullState,
+                synthesizedBranch.CombatState.FullState,
+                out _,
+                out NetFullCombatState.PlayerState anchorPlayerState,
+                out NetFullCombatState.PlayerState branchPlayerState))
+        {
+            return false;
+        }
+
+        PileType sourcePileType = choiceSpec.SourcePileType.Value;
+        int anchorSourcePileIndex = FindPileIndex(anchorPlayerState.piles, sourcePileType);
+        int branchSourcePileIndex = FindPileIndex(branchPlayerState.piles, sourcePileType);
+        if (anchorSourcePileIndex < 0 || branchSourcePileIndex < 0)
+            return false;
+
+        NetFullCombatState.CombatPileState anchorSourcePileState = anchorPlayerState.piles[anchorSourcePileIndex];
+        NetFullCombatState.CombatPileState branchSourcePileState = branchPlayerState.piles[branchSourcePileIndex];
+        if (anchorSourcePileState.cards.Count != branchSourcePileState.cards.Count)
+            return false;
+
+        List<int> selectedSourceIndexes = [];
+        foreach (int optionIndex in selectedKey.OptionIndexes)
+        {
+            if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
+                return false;
+
+            selectedSourceIndexes.Add(choiceSpec.SourcePileOptionIndexes[optionIndex]);
+        }
+
+        if (selectedSourceIndexes.Any(index => index < 0 || index >= anchorSourcePileState.cards.Count))
+            return false;
+
+        List<int> changedIndexes = FindUnmatchedCardIndexes(anchorSourcePileState.cards, branchSourcePileState.cards);
+        changedIndexes.Sort();
+        List<int> sortedSelectedIndexes = [.. selectedSourceIndexes.OrderBy(static index => index)];
+        if (!changedIndexes.SequenceEqual(sortedSelectedIndexes))
+            return false;
+
+        IReadOnlyList<CardModel> liveSourceCards = sourcePileType.GetPile(me).Cards;
+        if (liveSourceCards.Count != anchorSourcePileState.cards.Count)
+            return false;
+
+        request.TransformPileType = sourcePileType;
+        foreach (int sourceIndex in selectedSourceIndexes)
+            request.TransformCards.Add(new SyntheticTransformVfxCard(liveSourceCards[sourceIndex].ToSerializable(), sourceIndex));
+
+        return request.TransformCards.Count > 0;
+    }
+
+    private async Task PlaySyntheticChoiceVfxAsync(SyntheticChoiceVfxRequest request)
+    {
+        await WaitOneFrameAsync();
+        await RunOnMainThreadAsync<object?>(() =>
+        {
+            CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+            Player? me = combatState == null ? null : LocalContext.GetMe(combatState);
+            NCombatRoom? combatRoom = NCombatRoom.Instance;
+            if (me == null || combatRoom == null)
+                return null;
+
+            foreach (SyntheticExhaustVfxCard exhaustCard in request.ExhaustCards)
+            {
+                CardModel card = CardModel.FromSerializable(ClonePacketSerializable(exhaustCard.Card));
+                if (card.Owner == null)
+                    card.Owner = me;
+
+                NCard cardNode = CreateCardNode(card, PileType.Hand);
+                combatRoom.Ui.AddChildSafely(cardNode);
+                cardNode.Position = exhaustCard.GlobalPosition - combatRoom.Ui.GlobalPosition;
+                cardNode.ZIndex = 100;
+
+                Tween tween = combatRoom.CreateTween().SetParallel(true);
+                tween.TweenProperty(cardNode, "position", cardNode.Position + Vector2.Down * 25f, 0.3);
+                tween.TweenProperty(cardNode, "modulate", StsColors.exhaustGray, 0.3);
+                tween.Chain().TweenCallback(Callable.From(() =>
+                {
+                    NExhaustVfx? exhaustVfx = NExhaustVfx.Create(cardNode);
+                    if (exhaustVfx != null)
+                        combatRoom.Ui.AddChildSafely(exhaustVfx);
+                }));
+                tween.Chain().TweenCallback(Callable.From(cardNode.QueueFreeSafely));
+            }
+
+            if (request.TransformPileType != null)
+            {
+                IReadOnlyList<CardModel> liveSourceCards = request.TransformPileType.Value.GetPile(me).Cards;
+                Vector2 transformCenter = combatRoom.GetViewportRect().GetCenter();
+                float transformSpacing = request.TransformCards.Count <= 1 ? 0f : 84f;
+                for (int i = 0; i < request.TransformCards.Count; i++)
+                {
+                    SyntheticTransformVfxCard transformCard = request.TransformCards[i];
+                    if (transformCard.SourcePileIndex < 0 || transformCard.SourcePileIndex >= liveSourceCards.Count)
+                        continue;
+
+                    CardModel startCard = CardModel.FromSerializable(ClonePacketSerializable(transformCard.Card));
+                    if (startCard.Owner == null)
+                        startCard.Owner = me;
+
+                    CardModel endCard = liveSourceCards[transformCard.SourcePileIndex];
+                    NCardTransformVfx? transformVfx = NCardTransformVfx.Create(startCard, endCard, Array.Empty<RelicModel>());
+                    if (transformVfx != null)
+                    {
+                        combatRoom.CombatVfxContainer.AddChildSafely(transformVfx);
+                        float offsetX = (i - (request.TransformCards.Count - 1) * 0.5f) * transformSpacing;
+                        transformVfx.GlobalPosition = transformCenter + new Vector2(offsetX, 0f);
+                    }
+                }
+            }
+
+            return null;
+        });
+    }
+    private static bool TryCreateLikeTemplateSourcePileSelectionCombatState(
+        UndoSnapshot anchorSnapshot,
+        UndoSnapshot templateSnapshot,
+        UndoChoiceResultKey templateChoiceKey,
+        UndoChoiceResultKey selectedKey,
+        PileType sourcePileType,
+        IReadOnlyList<int> sourcePileOptionIndexes,
+        out UndoCombatFullState? combatState)
+    {
+        combatState = null;
+        if (selectedKey.OptionIndexes.Count != templateChoiceKey.OptionIndexes.Count)
+            return false;
+
+        List<int> selectedOptionIndexes = [.. selectedKey.OptionIndexes];
+        List<int> templateOptionIndexes = [.. templateChoiceKey.OptionIndexes];
+        if (selectedOptionIndexes.Any(index => index < 0 || index >= sourcePileOptionIndexes.Count)
+            || templateOptionIndexes.Any(index => index < 0 || index >= sourcePileOptionIndexes.Count))
+        {
+            return false;
+        }
 
         NetFullCombatState fullState = CloneFullState(templateSnapshot.CombatState.FullState);
         if (!TryGetComparablePlayerStates(anchorSnapshot.CombatState.FullState, fullState, out int playerIndex, out NetFullCombatState.PlayerState anchorPlayerState, out NetFullCombatState.PlayerState branchPlayerState))
@@ -637,34 +983,52 @@ public sealed class UndoController
             return false;
 
         NetFullCombatState.CombatPileState anchorSourcePileState = anchorPlayerState.piles[anchorSourcePileIndex];
-        int selectedSourceIndex = sourcePileOptionIndexes[selectedOptionIndex];
-        int templateSourceIndex = sourcePileOptionIndexes[templateOptionIndex];
-        if (selectedSourceIndex < 0 || selectedSourceIndex >= anchorSourcePileState.cards.Count)
-            return false;
-        if (templateSourceIndex < 0 || templateSourceIndex >= anchorSourcePileState.cards.Count)
-            return false;
+        List<int> selectedSourceIndexes = [];
+        List<int> templateSourceIndexes = [];
+        foreach (int optionIndex in selectedOptionIndexes)
+            selectedSourceIndexes.Add(sourcePileOptionIndexes[optionIndex]);
+        foreach (int optionIndex in templateOptionIndexes)
+            templateSourceIndexes.Add(sourcePileOptionIndexes[optionIndex]);
 
-        NetFullCombatState.CardState templateSelectedCardState = anchorSourcePileState.cards[templateSourceIndex];
-        NetFullCombatState.CombatPileState branchSourcePileState = ClonePacketSerializable(anchorSourcePileState);
-        branchSourcePileState.cards.RemoveAt(selectedSourceIndex);
-        branchPlayerState.piles[branchSourcePileIndex] = branchSourcePileState;
-
-        int destinationPileIndex;
-        int destinationCardIndex;
-        if (!TryFindDeterministicSourceSelectionDestinationSlot(anchorPlayerState, templateSnapshot.CombatState.FullState.Players[playerIndex], sourcePileType, out destinationPileIndex, out destinationCardIndex)
-            && !TryFindSourceSelectionDestinationSlot(anchorPlayerState, templateSnapshot.CombatState.FullState.Players[playerIndex], sourcePileType, templateSelectedCardState, out destinationPileIndex, out destinationCardIndex))
+        if (selectedSourceIndexes.Any(index => index < 0 || index >= anchorSourcePileState.cards.Count)
+            || templateSourceIndexes.Any(index => index < 0 || index >= anchorSourcePileState.cards.Count))
         {
             return false;
         }
 
-        if (destinationPileIndex >= 0)
+        List<NetFullCombatState.CardState> selectedSourceCardStates = selectedSourceIndexes
+            .Select(index => ClonePacketSerializable(anchorSourcePileState.cards[index]))
+            .ToList();
+        List<NetFullCombatState.CardState> templateSelectedCardStates = templateSourceIndexes
+            .Select(index => anchorSourcePileState.cards[index])
+            .ToList();
+
+        NetFullCombatState.CombatPileState branchSourcePileState = ClonePacketSerializable(anchorSourcePileState);
+        foreach (int sourceIndex in selectedSourceIndexes.OrderByDescending(static index => index))
+            branchSourcePileState.cards.RemoveAt(sourceIndex);
+        branchPlayerState.piles[branchSourcePileIndex] = branchSourcePileState;
+
+        if (!TryFindSourceSelectionDestinationSlots(
+                anchorPlayerState,
+                templateSnapshot.CombatState.FullState.Players[playerIndex],
+                sourcePileType,
+                templateSelectedCardStates,
+                out List<(int PileIndex, int CardIndex, int TemplateSelectionIndex)> destinationSlots))
         {
-            NetFullCombatState.CombatPileState destinationPileState = branchPlayerState.piles[destinationPileIndex];
-            if (destinationCardIndex < 0 || destinationCardIndex >= destinationPileState.cards.Count)
+            return false;
+        }
+
+        if (destinationSlots.Count != selectedSourceCardStates.Count)
+            return false;
+
+        foreach ((int pileIndex, int cardIndex, int templateSelectionIndex) in destinationSlots)
+        {
+            NetFullCombatState.CombatPileState destinationPileState = branchPlayerState.piles[pileIndex];
+            if (cardIndex < 0 || cardIndex >= destinationPileState.cards.Count)
                 return false;
 
-            destinationPileState.cards[destinationCardIndex] = ClonePacketSerializable(anchorSourcePileState.cards[selectedSourceIndex]);
-            branchPlayerState.piles[destinationPileIndex] = destinationPileState;
+            destinationPileState.cards[cardIndex] = ClonePacketSerializable(selectedSourceCardStates[templateSelectionIndex]);
+            branchPlayerState.piles[pileIndex] = destinationPileState;
         }
 
         fullState.Players[playerIndex] = branchPlayerState;
@@ -675,8 +1039,341 @@ public sealed class UndoController
             templateSnapshot.CombatState.SynchronizerCombatState,
             templateSnapshot.CombatState.NextActionId,
             templateSnapshot.CombatState.NextHookId,
-            templateSnapshot.CombatState.NextChecksumId);
+            templateSnapshot.CombatState.NextChecksumId,
+            templateSnapshot.CombatState.MonsterStates);
         return true;
+    }
+
+    private static bool TryCreateVariableCountSourcePileSelectionCombatState(
+        UndoSnapshot anchorSnapshot,
+        UndoSnapshot templateSnapshot,
+        UndoChoiceResultKey templateChoiceKey,
+        UndoChoiceResultKey selectedKey,
+        PileType sourcePileType,
+        IReadOnlyList<int> sourcePileOptionIndexes,
+        out UndoCombatFullState? combatState)
+    {
+        combatState = null;
+        List<int> selectedOptionIndexes = [.. selectedKey.OptionIndexes];
+        List<int> templateOptionIndexes = [.. templateChoiceKey.OptionIndexes];
+        if (selectedOptionIndexes.Any(index => index < 0 || index >= sourcePileOptionIndexes.Count)
+            || templateOptionIndexes.Any(index => index < 0 || index >= sourcePileOptionIndexes.Count))
+        {
+            return false;
+        }
+
+        NetFullCombatState fullState = CloneFullState(templateSnapshot.CombatState.FullState);
+        if (!TryGetComparablePlayerStates(anchorSnapshot.CombatState.FullState, fullState, out int playerIndex, out NetFullCombatState.PlayerState anchorPlayerState, out NetFullCombatState.PlayerState branchPlayerState))
+            return false;
+
+        NetFullCombatState.PlayerState templatePlayerState = templateSnapshot.CombatState.FullState.Players[playerIndex];
+        int anchorSourcePileIndex = FindPileIndex(anchorPlayerState.piles, sourcePileType);
+        int branchSourcePileIndex = FindPileIndex(branchPlayerState.piles, sourcePileType);
+        if (anchorSourcePileIndex < 0 || branchSourcePileIndex < 0)
+            return false;
+
+        NetFullCombatState.CombatPileState anchorSourcePileState = anchorPlayerState.piles[anchorSourcePileIndex];
+        List<int> selectedSourceIndexes = [];
+        List<int> templateSourceIndexes = [];
+        foreach (int optionIndex in selectedOptionIndexes)
+            selectedSourceIndexes.Add(sourcePileOptionIndexes[optionIndex]);
+        foreach (int optionIndex in templateOptionIndexes)
+            templateSourceIndexes.Add(sourcePileOptionIndexes[optionIndex]);
+
+        if (selectedSourceIndexes.Any(index => index < 0 || index >= anchorSourcePileState.cards.Count)
+            || templateSourceIndexes.Any(index => index < 0 || index >= anchorSourcePileState.cards.Count))
+        {
+            return false;
+        }
+
+        List<NetFullCombatState.CardState> selectedSourceCardStates = selectedSourceIndexes
+            .Select(index => ClonePacketSerializable(anchorSourcePileState.cards[index]))
+            .ToList();
+        List<NetFullCombatState.CardState> templateSelectedCardStates = templateSourceIndexes
+            .Select(index => anchorSourcePileState.cards[index])
+            .ToList();
+
+        NetFullCombatState.CombatPileState branchSourcePileState = ClonePacketSerializable(anchorSourcePileState);
+        foreach (int sourceIndex in selectedSourceIndexes.OrderByDescending(static index => index))
+            branchSourcePileState.cards.RemoveAt(sourceIndex);
+        branchPlayerState.piles[branchSourcePileIndex] = branchSourcePileState;
+
+        if (!TryApplyVariableCountSourceSelectionDestinationPattern(
+                anchorPlayerState,
+                templatePlayerState,
+                branchPlayerState,
+                sourcePileType,
+                templateSelectedCardStates,
+                selectedSourceCardStates))
+        {
+            return false;
+        }
+
+        fullState.Players[playerIndex] = branchPlayerState;
+        combatState = new UndoCombatFullState(
+            fullState,
+            templateSnapshot.CombatState.RoundNumber,
+            templateSnapshot.CombatState.CurrentSide,
+            templateSnapshot.CombatState.SynchronizerCombatState,
+            templateSnapshot.CombatState.NextActionId,
+            templateSnapshot.CombatState.NextHookId,
+            templateSnapshot.CombatState.NextChecksumId,
+            templateSnapshot.CombatState.MonsterStates);
+        return true;
+    }
+
+    private static bool TryApplyVariableCountSourceSelectionDestinationPattern(
+        NetFullCombatState.PlayerState anchorPlayerState,
+        NetFullCombatState.PlayerState templatePlayerState,
+        NetFullCombatState.PlayerState branchPlayerState,
+        PileType sourcePileType,
+        IReadOnlyList<NetFullCombatState.CardState> templateSelectedCardStates,
+        IReadOnlyList<NetFullCombatState.CardState> selectedSourceCardStates)
+    {
+        return TryApplyTemplateMatchedSourceSelectionDestinationPattern(
+                anchorPlayerState,
+                templatePlayerState,
+                branchPlayerState,
+                sourcePileType,
+                templateSelectedCardStates,
+                selectedSourceCardStates)
+            || TryApplyCountDeltaSourceSelectionDestinationPattern(
+                anchorPlayerState,
+                templatePlayerState,
+                branchPlayerState,
+                sourcePileType,
+                templateSelectedCardStates,
+                selectedSourceCardStates);
+    }
+
+    private static bool TryApplyTemplateMatchedSourceSelectionDestinationPattern(
+        NetFullCombatState.PlayerState anchorPlayerState,
+        NetFullCombatState.PlayerState templatePlayerState,
+        NetFullCombatState.PlayerState branchPlayerState,
+        PileType sourcePileType,
+        IReadOnlyList<NetFullCombatState.CardState> templateSelectedCardStates,
+        IReadOnlyList<NetFullCombatState.CardState> selectedSourceCardStates)
+    {
+        List<(int TemplatePileIndex, int CardIndex, int TemplateSelectionIndex)> matchedTemplateSlots = [];
+        bool[] usedTemplateSelections = new bool[templateSelectedCardStates.Count];
+
+        for (int i = 0; i < templatePlayerState.piles.Count; i++)
+        {
+            NetFullCombatState.CombatPileState templatePileState = templatePlayerState.piles[i];
+            if (templatePileState.pileType == sourcePileType)
+                continue;
+
+            int anchorPileIndex = FindPileIndex(anchorPlayerState.piles, templatePileState.pileType);
+            if (anchorPileIndex < 0)
+                return false;
+
+            NetFullCombatState.CombatPileState anchorPileState = anchorPlayerState.piles[anchorPileIndex];
+            List<int> unmatchedIndexes = FindUnmatchedCardIndexes(anchorPileState.cards, templatePileState.cards);
+            foreach (int unmatchedIndex in unmatchedIndexes)
+            {
+                for (int selectionIndex = 0; selectionIndex < templateSelectedCardStates.Count; selectionIndex++)
+                {
+                    if (usedTemplateSelections[selectionIndex]
+                        || !PacketDataEquals(templatePileState.cards[unmatchedIndex], templateSelectedCardStates[selectionIndex]))
+                    {
+                        continue;
+                    }
+
+                    usedTemplateSelections[selectionIndex] = true;
+                    matchedTemplateSlots.Add((i, unmatchedIndex, selectionIndex));
+                    break;
+                }
+            }
+        }
+
+        if (!usedTemplateSelections.All(static used => used))
+            return false;
+
+        if (matchedTemplateSlots.Count == 0)
+            return selectedSourceCardStates.Count == 0;
+
+        List<IGrouping<int, (int TemplatePileIndex, int CardIndex, int TemplateSelectionIndex)>> destinationGroups = matchedTemplateSlots
+            .GroupBy(static slot => slot.TemplatePileIndex)
+            .ToList();
+        if (destinationGroups.Count != 1)
+            return false;
+
+        IGrouping<int, (int TemplatePileIndex, int CardIndex, int TemplateSelectionIndex)> destinationGroup = destinationGroups[0];
+        List<(int TemplatePileIndex, int CardIndex, int TemplateSelectionIndex)> orderedSlots = destinationGroup
+            .OrderBy(slot => slot.CardIndex)
+            .ToList();
+
+        int insertionIndex = orderedSlots[0].CardIndex;
+        for (int i = 0; i < orderedSlots.Count; i++)
+        {
+            if (orderedSlots[i].CardIndex != insertionIndex + i)
+                return false;
+        }
+
+        List<int> templateSelectionOrder = orderedSlots
+            .Select(slot => slot.TemplateSelectionIndex)
+            .ToList();
+        bool isForwardOrder = templateSelectionOrder.SequenceEqual(Enumerable.Range(0, templateSelectionOrder.Count));
+        bool isReverseOrder = templateSelectionOrder.SequenceEqual(Enumerable.Range(0, templateSelectionOrder.Count).Reverse());
+        if (!isForwardOrder && !isReverseOrder)
+            return false;
+
+        int templateDestinationPileIndex = destinationGroup.Key;
+        PileType destinationPileType = templatePlayerState.piles[templateDestinationPileIndex].pileType;
+        int branchDestinationPileIndex = FindPileIndex(branchPlayerState.piles, destinationPileType);
+        if (branchDestinationPileIndex < 0)
+            return false;
+
+        NetFullCombatState.CombatPileState branchDestinationPileState = ClonePacketSerializable(branchPlayerState.piles[branchDestinationPileIndex]);
+        foreach ((int _, int cardIndex, _) in orderedSlots.OrderByDescending(static slot => slot.CardIndex))
+            branchDestinationPileState.cards.RemoveAt(cardIndex);
+
+        List<NetFullCombatState.CardState> cardsToInsert = selectedSourceCardStates
+            .Select(ClonePacketSerializable)
+            .ToList();
+        if (isReverseOrder)
+            cardsToInsert.Reverse();
+
+        for (int i = 0; i < cardsToInsert.Count; i++)
+            branchDestinationPileState.cards.Insert(insertionIndex + i, cardsToInsert[i]);
+
+        branchPlayerState.piles[branchDestinationPileIndex] = branchDestinationPileState;
+        return true;
+    }
+
+    private static bool TryApplyCountDeltaSourceSelectionDestinationPattern(
+        NetFullCombatState.PlayerState anchorPlayerState,
+        NetFullCombatState.PlayerState templatePlayerState,
+        NetFullCombatState.PlayerState branchPlayerState,
+        PileType sourcePileType,
+        IReadOnlyList<NetFullCombatState.CardState> templateSelectedCardStates,
+        IReadOnlyList<NetFullCombatState.CardState> selectedSourceCardStates)
+    {
+        int anchorSourcePileIndex = FindPileIndex(anchorPlayerState.piles, sourcePileType);
+        int templateSourcePileIndex = FindPileIndex(templatePlayerState.piles, sourcePileType);
+        if (anchorSourcePileIndex < 0 || templateSourcePileIndex < 0)
+            return false;
+
+        NetFullCombatState.CombatPileState anchorSourcePileState = anchorPlayerState.piles[anchorSourcePileIndex];
+        NetFullCombatState.CombatPileState templateSourcePileState = templatePlayerState.piles[templateSourcePileIndex];
+        if (anchorSourcePileState.cards.Count - templateSourcePileState.cards.Count != templateSelectedCardStates.Count)
+            return false;
+
+        int templateDestinationPileIndex = -1;
+        PileType destinationPileType = default;
+        List<int>? destinationUnmatchedIndexes = null;
+
+        for (int i = 0; i < templatePlayerState.piles.Count; i++)
+        {
+            NetFullCombatState.CombatPileState templatePileState = templatePlayerState.piles[i];
+            if (templatePileState.pileType == sourcePileType)
+                continue;
+
+            int anchorPileIndex = FindPileIndex(anchorPlayerState.piles, templatePileState.pileType);
+            if (anchorPileIndex < 0)
+                return false;
+
+            NetFullCombatState.CombatPileState anchorPileState = anchorPlayerState.piles[anchorPileIndex];
+            int countDelta = templatePileState.cards.Count - anchorPileState.cards.Count;
+            if (countDelta < 0)
+                return false;
+            if (countDelta == 0)
+                continue;
+            if (countDelta < templateSelectedCardStates.Count || templateDestinationPileIndex >= 0)
+                return false;
+
+            List<int> unmatchedIndexes = FindUnmatchedCardIndexes(anchorPileState.cards, templatePileState.cards);
+            if (unmatchedIndexes.Count != countDelta)
+                return false;
+
+            templateDestinationPileIndex = i;
+            destinationPileType = templatePileState.pileType;
+            destinationUnmatchedIndexes = unmatchedIndexes;
+        }
+
+        if (templateDestinationPileIndex < 0 || destinationUnmatchedIndexes == null)
+            return selectedSourceCardStates.Count == 0;
+
+        destinationUnmatchedIndexes.Sort();
+        int insertionIndex = destinationUnmatchedIndexes[0];
+        int contiguousSelectionSpan = Math.Min(templateSelectedCardStates.Count, destinationUnmatchedIndexes.Count);
+        for (int i = 0; i < contiguousSelectionSpan; i++)
+        {
+            if (destinationUnmatchedIndexes[i] != insertionIndex + i)
+                return false;
+        }
+
+        int branchDestinationPileIndex = FindPileIndex(branchPlayerState.piles, destinationPileType);
+        if (branchDestinationPileIndex < 0)
+            return false;
+
+        bool reverseOrder = destinationPileType == PileType.Deck && insertionIndex == 0 && selectedSourceCardStates.Count > 1;
+        NetFullCombatState.CombatPileState branchDestinationPileState = ClonePacketSerializable(branchPlayerState.piles[branchDestinationPileIndex]);
+        for (int i = contiguousSelectionSpan - 1; i >= 0; i--)
+            branchDestinationPileState.cards.RemoveAt(insertionIndex + i);
+
+        List<NetFullCombatState.CardState> cardsToInsert = selectedSourceCardStates
+            .Select(ClonePacketSerializable)
+            .ToList();
+        if (reverseOrder)
+            cardsToInsert.Reverse();
+
+        for (int i = 0; i < cardsToInsert.Count; i++)
+            branchDestinationPileState.cards.Insert(insertionIndex + i, cardsToInsert[i]);
+
+        branchPlayerState.piles[branchDestinationPileIndex] = branchDestinationPileState;
+        return true;
+    }
+    private static bool TryFindSourceSelectionDestinationSlots(
+        NetFullCombatState.PlayerState anchorPlayerState,
+        NetFullCombatState.PlayerState templatePlayerState,
+        PileType sourcePileType,
+        IReadOnlyList<NetFullCombatState.CardState> templateSelectedCardStates,
+        out List<(int PileIndex, int CardIndex, int TemplateSelectionIndex)> destinationSlots)
+    {
+        destinationSlots = [];
+        List<(int PileIndex, int CardIndex, NetFullCombatState.CardState CardState)> unmatchedSlots = [];
+
+        for (int i = 0; i < templatePlayerState.piles.Count; i++)
+        {
+            NetFullCombatState.CombatPileState templatePileState = templatePlayerState.piles[i];
+            if (templatePileState.pileType == sourcePileType)
+                continue;
+
+            int anchorPileIndex = FindPileIndex(anchorPlayerState.piles, templatePileState.pileType);
+            if (anchorPileIndex < 0)
+                return false;
+
+            NetFullCombatState.CombatPileState anchorPileState = anchorPlayerState.piles[anchorPileIndex];
+            List<int> unmatchedIndexes = FindUnmatchedCardIndexes(anchorPileState.cards, templatePileState.cards);
+            foreach (int unmatchedIndex in unmatchedIndexes)
+                unmatchedSlots.Add((i, unmatchedIndex, templatePileState.cards[unmatchedIndex]));
+        }
+
+        if (unmatchedSlots.Count != templateSelectedCardStates.Count)
+            return false;
+
+        bool[] usedTemplateSelections = new bool[templateSelectedCardStates.Count];
+        foreach ((int pileIndex, int cardIndex, NetFullCombatState.CardState cardState) in unmatchedSlots)
+        {
+            int matchedSelectionIndex = -1;
+            for (int i = 0; i < templateSelectedCardStates.Count; i++)
+            {
+                if (usedTemplateSelections[i] || !PacketDataEquals(cardState, templateSelectedCardStates[i]))
+                    continue;
+
+                matchedSelectionIndex = i;
+                usedTemplateSelections[i] = true;
+                break;
+            }
+
+            if (matchedSelectionIndex < 0)
+                return false;
+
+            destinationSlots.Add((pileIndex, cardIndex, matchedSelectionIndex));
+        }
+
+        return usedTemplateSelections.All(static used => used);
     }
 
     private static bool TryFindDeterministicSourceSelectionDestinationSlot(
@@ -1119,6 +1816,7 @@ public sealed class UndoController
 
             RestorePlayers(runState, combatState, snapshot.FullState);
             RestoreCreatures(runState, combatState, snapshot.FullState);
+            RestoreMonsterStates(combatState, snapshot.MonsterStates);
 
             combatState.RoundNumber = snapshot.RoundNumber;
             combatState.CurrentSide = snapshot.CurrentSide;
@@ -1411,7 +2109,50 @@ public sealed class UndoController
         if (NTargetManager.Instance != null && NTargetManager.Instance.IsInSelection)
             return true;
 
-        return combatUi.Hand.InCardPlay || combatUi.Hand.IsInCardSelection;
+        return combatUi.Hand.InCardPlay
+            || combatUi.Hand.IsInCardSelection
+            || IsCombatUiTransitioning(combatUi);
+    }
+
+    private static bool IsCombatUiTransitioning(NCombatUi combatUi)
+    {
+        if (CombatManager.Instance.EndingPlayerTurnPhaseOne || CombatManager.Instance.EndingPlayerTurnPhaseTwo)
+            return true;
+
+        NPlayerHand hand = combatUi.Hand;
+        if (IsTweenRunning(hand, "_animInTween")
+            || IsTweenRunning(hand, "_animOutTween")
+            || IsTweenRunning(hand, "_animEnableTween")
+            || IsTweenRunning(hand, "_selectedCardScaleTween"))
+        {
+            return true;
+        }
+
+        if (FindField(hand.GetType(), "_holdersAwaitingQueue")?.GetValue(hand) is System.Collections.ICollection awaitingQueue
+            && awaitingQueue.Count > 0)
+        {
+            return true;
+        }
+
+        if (combatUi.PlayQueue.GetChildCount() > 0)
+            return true;
+
+        if (ContainsDescendantOfType<NCardFlyVfx>(NCombatRoom.Instance?.CombatVfxContainer)
+            || ContainsDescendantOfType<NCardFlyVfx>(NRun.Instance?.GlobalUi?.TopBar?.TrailContainer))
+        {
+            return true;
+        }
+
+        foreach (Node child in hand.CardHolderContainer.GetChildren())
+        {
+            if (child is not NHandCardHolder holder)
+                continue;
+
+            if (holder.Position.DistanceSquaredTo(holder.TargetPosition) > 4f)
+                return true;
+        }
+
+        return false;
     }
 
     private bool MoveCurrentChoiceAnchorToDestinationIfNeeded(LinkedList<UndoSnapshot> source, LinkedList<UndoSnapshot> destination)
@@ -1715,7 +2456,49 @@ public sealed class UndoController
             RunManager.Instance.ActionQueueSynchronizer.CombatState,
             RunManager.Instance.ActionQueueSet.NextActionId,
             RunManager.Instance.ActionQueueSynchronizer.NextHookId,
-            RunManager.Instance.ChecksumTracker.NextId);
+            RunManager.Instance.ChecksumTracker.NextId,
+            CaptureMonsterStates(combatState.Creatures));
+    }
+
+    private static IReadOnlyList<UndoMonsterState> CaptureMonsterStates(IReadOnlyList<Creature> creatures)
+    {
+        List<UndoMonsterState> states = [];
+        for (int i = 0; i < creatures.Count; i++)
+        {
+            Creature creature = creatures[i];
+            MonsterModel? monster = creature.Monster;
+            if (monster?.MoveStateMachine == null)
+                continue;
+
+            MonsterMoveStateMachine moveStateMachine = monster.MoveStateMachine;
+            string creatureKey = BuildCreatureKey(creature, i);
+            string? currentStateId = GetPrivateFieldValue<MonsterState>(moveStateMachine, "_currentState")?.Id;
+            bool performedFirstMove = FindField(moveStateMachine.GetType(), "_performedFirstMove")?.GetValue(moveStateMachine) is true;
+            bool nextMovePerformedAtLeastOnce = FindField(monster.NextMove.GetType(), "_performedAtLeastOnce")?.GetValue(monster.NextMove) is true;
+            states.Add(new UndoMonsterState
+            {
+                CreatureKey = creatureKey,
+                CurrentStateId = currentStateId,
+                NextMoveId = monster.NextMove?.Id,
+                SpawnedThisTurn = monster.SpawnedThisTurn,
+                PerformedFirstMove = performedFirstMove,
+                NextMovePerformedAtLeastOnce = nextMovePerformedAtLeastOnce,
+                StateLogIds = [.. moveStateMachine.StateLog.Select(static state => state.Id)]
+            });
+        }
+
+        return states;
+    }
+
+    private static string BuildCreatureKey(Creature creature, int index)
+    {
+        if (creature.Player != null)
+            return $"player:{index}:{creature.Player.NetId}";
+
+        if (creature.Monster != null)
+            return $"monster:{index}:{creature.Monster.Id.Entry}";
+
+        return $"creature:{index}";
     }
 
     private static bool CanApplyFullStateInPlace(
@@ -2064,6 +2847,59 @@ public sealed class UndoController
             creature.LoseBlockInternal(creature.Block - saved.block);
         RestoreCreaturePowers(creature, saved);
     }
+
+    private static void RestoreMonsterStates(CombatState combatState, IReadOnlyList<UndoMonsterState> monsterStates)
+    {
+        if (monsterStates.Count == 0)
+            return;
+
+        Dictionary<string, UndoMonsterState> statesByKey = monsterStates.ToDictionary(static state => state.CreatureKey);
+        IReadOnlyList<Creature> creatures = combatState.Creatures;
+        for (int i = 0; i < creatures.Count; i++)
+        {
+            Creature creature = creatures[i];
+            MonsterModel? monster = creature.Monster;
+            if (monster?.MoveStateMachine == null)
+                continue;
+
+            if (!statesByKey.TryGetValue(BuildCreatureKey(creature, i), out UndoMonsterState? state))
+                continue;
+
+            RestoreMonsterState(monster, state);
+        }
+    }
+
+    private static void RestoreMonsterState(MonsterModel monster, UndoMonsterState state)
+    {
+        MonsterMoveStateMachine? moveStateMachine = monster.MoveStateMachine;
+        if (moveStateMachine == null)
+            return;
+
+        SetPrivateFieldValue(monster, "_spawnedThisTurn", state.SpawnedThisTurn);
+        SetPrivateFieldValue(moveStateMachine, "_performedFirstMove", state.PerformedFirstMove);
+
+        if (moveStateMachine.StateLog is List<MonsterState> stateLog)
+        {
+            stateLog.Clear();
+            foreach (string stateId in state.StateLogIds)
+            {
+                if (moveStateMachine.States.TryGetValue(stateId, out MonsterState? loggedState))
+                    stateLog.Add(loggedState);
+            }
+        }
+
+        if (state.CurrentStateId != null && moveStateMachine.States.TryGetValue(state.CurrentStateId, out MonsterState? currentState))
+            moveStateMachine.ForceCurrentState(currentState);
+
+        if (state.NextMoveId != null && moveStateMachine.States.TryGetValue(state.NextMoveId, out MonsterState? nextState) && nextState is MoveState moveState)
+        {
+            if (!TrySetPrivateAutoPropertyBackingField(monster, "NextMove", moveState))
+                SetPrivatePropertyValue(monster, "NextMove", moveState);
+            if (state.CurrentStateId == null)
+                moveStateMachine.ForceCurrentState(moveState);
+            SetPrivateFieldValue(moveState, "_performedAtLeastOnce", state.NextMovePerformedAtLeastOnce);
+        }
+    }
     private static void RestoreCreaturePowers(Creature creature, NetFullCombatState.CreatureState saved)
     {
         List<PowerModel> remainingCurrentPowers = creature.Powers.ToList();
@@ -2107,6 +2943,8 @@ public sealed class UndoController
         await WaitOneFrameAsync();
         if (NCombatRoom.Instance != null)
             ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, LocalContext.GetMe(combatState));
+
+        NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoRefreshCombatUiAsync"]);
     }
     private static void NormalizeCombatInteractionState(CombatState combatState)
     {
@@ -2115,6 +2953,7 @@ public sealed class UndoController
         RunManager.Instance.HoveredModelTracker.OnLocalCardUnhovered();
         ClearCombatManagerCollection("_playersReadyToEndTurn");
         ClearCombatManagerCollection("_playersReadyToBeginEnemyTurn");
+        ClearCombatManagerCollection("_playersTakingExtraTurn");
         bool isPlayerTurn = combatState.CurrentSide == CombatSide.Player;
         SetCombatManagerProperty("IsPlayPhase", isPlayerTurn);
         SetCombatManagerProperty("IsEnemyTurnStarted", !isPlayerTurn);
@@ -2263,6 +3102,31 @@ public sealed class UndoController
         if (GetPrivateFieldValue<Tween>(instance, fieldName) is { } tween)
             tween.Kill();
     }
+
+    private static bool IsTweenRunning(object instance, string fieldName)
+    {
+        if (GetPrivateFieldValue<Tween>(instance, fieldName) is not { } tween)
+            return false;
+
+        return GodotObject.IsInstanceValid(tween) && tween.IsRunning();
+    }
+
+    private static bool ContainsDescendantOfType<TNode>(Node? node) where TNode : Node
+    {
+        if (node == null || !GodotObject.IsInstanceValid(node))
+            return false;
+
+        foreach (Node child in node.GetChildren())
+        {
+            if (child is TNode)
+                return true;
+
+            if (ContainsDescendantOfType<TNode>(child))
+                return true;
+        }
+
+        return false;
+    }
     private static T GetStaticFieldValue<T>(Type type, string fieldName)
     {
         object? value = FindField(type, fieldName)?.GetValue(null);
@@ -2332,9 +3196,26 @@ public sealed class UndoController
 
     private static void SetPrivatePropertyValue(object instance, string propertyName, object? value)
     {
-        FindProperty(instance.GetType(), propertyName)?.SetValue(instance, value);
+        PropertyInfo? property = FindProperty(instance.GetType(), propertyName);
+        MethodInfo? setter = property?.GetSetMethod(true);
+        if (setter != null)
+        {
+            setter.Invoke(instance, [value]);
+            return;
+        }
+
+        property?.SetValue(instance, value);
     }
 
+    private static bool TrySetPrivateAutoPropertyBackingField(object instance, string propertyName, object? value)
+    {
+        FieldInfo? backingField = FindField(instance.GetType(), $"<{propertyName}>k__BackingField");
+        if (backingField == null)
+            return false;
+
+        backingField.SetValue(instance, value);
+        return true;
+    }
     private static object? InvokePrivateMethod(object instance, string methodName, params object?[]? args)
     {
         return FindMethod(instance.GetType(), methodName)?.Invoke(instance, args);
@@ -2506,7 +3387,26 @@ private static SerializableRun CloneRun(SerializableRun run)
 
         return completionSource.Task;
     }
+
+    private sealed class SyntheticChoiceVfxRequest
+    {
+        public List<SyntheticExhaustVfxCard> ExhaustCards { get; } = [];
+
+        public PileType? TransformPileType { get; set; }
+
+        public List<SyntheticTransformVfxCard> TransformCards { get; } = [];
+
+        public bool HasEffects => ExhaustCards.Count > 0 || TransformCards.Count > 0;
+    }
+
+    private sealed record SyntheticExhaustVfxCard(SerializableCard Card, Vector2 GlobalPosition);
+
+    private sealed record SyntheticTransformVfxCard(SerializableCard Card, int SourcePileIndex);
 }
+
+
+
+
 
 
 
