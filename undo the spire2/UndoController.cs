@@ -1892,7 +1892,7 @@ public sealed class UndoController
 
         try
         {
-            DismissSupportedChoiceUiIfPresent();
+            await DismissSupportedChoiceUiIfPresentAsync();
             RunManager.Instance.ActionQueueSet.Reset();
             RebuildActionQueues(runState.Players);
             runState.Rng.LoadFromSerializable(snapshot.FullState.Rng);
@@ -2318,19 +2318,38 @@ public sealed class UndoController
         return NOverlayStack.Instance?.Peek() is NChooseACardSelectionScreen or NCardGridSelectionScreen;
     }
 
-    private void DismissSupportedChoiceUiIfPresent()
+    private async Task DismissSupportedChoiceUiIfPresentAsync()
     {
         _syntheticChoiceSession = null;
 
+        bool removedOverlay = false;
         if (NOverlayStack.Instance?.Peek() is IOverlayScreen choiceScreen
             && choiceScreen is NChooseACardSelectionScreen or NCardGridSelectionScreen)
         {
             RemoveChoiceOverlaySafely(choiceScreen);
+            removedOverlay = true;
         }
 
         NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
-        if (hand?.IsInCardSelection == true)
-            InvokePrivateMethod(hand, "CancelHandSelectionIfNecessary");
+        if (hand != null)
+        {
+            TaskCompletionSource<IEnumerable<CardModel>>? selectionCompletionSource = GetPrivateFieldValue<TaskCompletionSource<IEnumerable<CardModel>>>(hand, "_selectionCompletionSource");
+            Task<IEnumerable<CardModel>>? selectionTask = selectionCompletionSource?.Task;
+            bool isSelectionPending = hand.IsInCardSelection || (selectionTask != null && !selectionTask.IsCompleted);
+            if (isSelectionPending)
+            {
+                if (selectionTask != null && !selectionTask.IsCompleted)
+                    selectionCompletionSource!.SetResult(Array.Empty<CardModel>());
+
+                NCombatRoom.Instance?.Ui?.OnHandSelectModeExited();
+                await WaitOneFrameAsync();
+                await WaitOneFrameAsync();
+                SetPrivateFieldValue(hand, "_selectionCompletionSource", null);
+            }
+        }
+
+        if (removedOverlay)
+            await WaitOneFrameAsync();
     }
 
     private static void RemoveChoiceOverlaySafely(IOverlayScreen choiceScreen)
@@ -2567,28 +2586,12 @@ public sealed class UndoController
             return false;
         }
 
-        IReadOnlyList<Creature> currentCreatures = combatState.Creatures;
-        if (snapshot.Creatures.Count != currentCreatures.Count)
+        IReadOnlyList<Player> currentPlayers = runState.Players;
+        for (int i = 0; i < snapshot.Players.Count; i++)
         {
-            reason = "creature_count_changed";
-            return false;
-        }
-
-        for (int i = 0; i < currentCreatures.Count; i++)
-        {
-            Creature current = currentCreatures[i];
-            NetFullCombatState.CreatureState saved = snapshot.Creatures[i];
-            if (saved.playerId != null)
+            if (currentPlayers[i].NetId != snapshot.Players[i].playerId)
             {
-                if (current.Player?.NetId != saved.playerId.Value)
-                {
-                    reason = $"player_creature_mismatch_{i}";
-                    return false;
-                }
-            }
-            else if (current.Monster?.Id != saved.monsterId)
-            {
-                reason = $"monster_mismatch_{i}";
+                reason = $"player_mismatch_{i}";
                 return false;
             }
         }
@@ -2878,6 +2881,8 @@ public sealed class UndoController
     }
     private static void RestoreCreatures(RunState runState, CombatState combatState, NetFullCombatState snapshot)
     {
+        SyncCombatCreaturesToSnapshot(runState, combatState, snapshot);
+
         IReadOnlyList<Creature> creatures = combatState.Creatures;
         for (int i = 0; i < snapshot.Creatures.Count; i++)
             RestoreCreatureState(creatures[i], snapshot.Creatures[i]);
@@ -2889,6 +2894,94 @@ public sealed class UndoController
             else
                 player.DeactivateHooks();
         }
+    }
+
+    private static void SyncCombatCreaturesToSnapshot(RunState runState, CombatState combatState, NetFullCombatState snapshot)
+    {
+        List<Creature> desiredAllies = snapshot.Players
+            .Select(playerState => runState.GetPlayer(playerState.playerId)?.Creature
+                ?? throw new InvalidOperationException($"Could not map player creature {playerState.playerId}."))
+            .ToList();
+
+        List<Creature> currentEnemies = combatState.Enemies.ToList();
+        HashSet<Creature> usedEnemies = [];
+        List<Creature> desiredEnemies = [];
+        List<string?> encounterSlots = ResolveSnapshotEnemySlots(combatState, snapshot);
+        int enemyIndex = 0;
+        foreach (NetFullCombatState.CreatureState creatureState in snapshot.Creatures)
+        {
+            if (creatureState.playerId != null)
+                continue;
+
+            Creature? existingEnemy = currentEnemies.FirstOrDefault(creature => !usedEnemies.Contains(creature) && creature.Monster?.Id == creatureState.monsterId);
+            if (existingEnemy == null)
+            {
+                if (creatureState.monsterId == null)
+                    throw new InvalidOperationException($"Snapshot enemy state at index {enemyIndex} had no monster id.");
+
+                MonsterModel monster = ModelDb.GetById<MonsterModel>(creatureState.monsterId).ToMutable();
+                existingEnemy = combatState.CreateCreature(monster, CombatSide.Enemy, enemyIndex < encounterSlots.Count ? encounterSlots[enemyIndex] : null);
+            }
+
+            desiredEnemies.Add(existingEnemy);
+            usedEnemies.Add(existingEnemy);
+            enemyIndex++;
+        }
+
+        foreach (Creature enemy in currentEnemies)
+        {
+            if (usedEnemies.Contains(enemy))
+                continue;
+
+            enemy.CombatState = null;
+        }
+
+        ReplaceCombatCreatureList(combatState, "_allies", desiredAllies);
+        ReplaceCombatCreatureList(combatState, "_enemies", desiredEnemies);
+        NotifyCombatCreaturesChanged(combatState);
+    }
+
+    private static List<string?> ResolveSnapshotEnemySlots(CombatState combatState, NetFullCombatState snapshot)
+    {
+        List<string?> slots = [];
+        List<(ModelId Id, string? Slot)> encounterMonsters = [];
+        EncounterModel? encounter = combatState.Encounter;
+        if (encounter != null)
+        {
+            foreach (var monsterWithSlot in encounter.MonstersWithSlots)
+                encounterMonsters.Add((monsterWithSlot.Item1.Id, monsterWithSlot.Item2));
+        }
+
+        Dictionary<string, int> usedOrdinals = [];
+        foreach (NetFullCombatState.CreatureState creatureState in snapshot.Creatures)
+        {
+            if (creatureState.playerId != null || creatureState.monsterId == null)
+                continue;
+
+            string key = creatureState.monsterId.Entry;
+            int ordinal = usedOrdinals.TryGetValue(key, out int existingOrdinal) ? existingOrdinal : 0;
+            usedOrdinals[key] = ordinal + 1;
+            string? slot = encounterMonsters.Where(tuple => tuple.Id == creatureState.monsterId).Skip(ordinal).Select(tuple => tuple.Slot).FirstOrDefault();
+            slots.Add(slot);
+        }
+
+        return slots;
+    }
+
+    private static void ReplaceCombatCreatureList(CombatState combatState, string fieldName, IEnumerable<Creature> desiredCreatures)
+    {
+        if (FindField(typeof(CombatState), fieldName)?.GetValue(combatState) is not System.Collections.IList list)
+            throw new InvalidOperationException($"Could not access CombatState.{fieldName}.");
+
+        list.Clear();
+        foreach (Creature creature in desiredCreatures)
+            list.Add(creature);
+    }
+
+    private static void NotifyCombatCreaturesChanged(CombatState combatState)
+    {
+        if (FindField(typeof(CombatState), "CreaturesChanged")?.GetValue(combatState) is Action<CombatState> creaturesChanged)
+            creaturesChanged(combatState);
     }
 
     private static void RestoreCreatureState(Creature creature, NetFullCombatState.CreatureState saved)
@@ -2979,6 +3072,7 @@ public sealed class UndoController
         foreach (Player player in combatState.Players)
             player.PlayerCombatState?.RecalculateCardValues();
         NormalizeCombatInteractionState(combatState);
+        RebuildCombatCreatureNodesIfNeeded(combatState);
         RebuildCombatUiCards(combatState);
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom != null)
@@ -3035,6 +3129,43 @@ public sealed class UndoController
         SnapHandHolders(ui.Hand);
         foreach (CardModel card in PileType.Play.GetPile(me).Cards)
             ui.AddToPlayContainer(CreateCardNode(card, PileType.Play));
+    }
+
+    private static void RebuildCombatCreatureNodesIfNeeded(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        List<Creature> creatures = combatState.Creatures.ToList();
+        List<NCreature> creatureNodes = combatRoom.CreatureNodes.ToList();
+        List<NCreature> removingNodes = combatRoom.RemovingCreatureNodes.ToList();
+        bool topologyMismatch = creatureNodes.Count != creatures.Count
+            || removingNodes.Count > 0
+            || creatures.Any(creature => combatRoom.GetCreatureNode(creature) == null);
+        if (!topologyMismatch)
+            return;
+
+        foreach (NCreature node in creatureNodes.Concat(removingNodes).Distinct())
+        {
+            node.GetParent()?.RemoveChild(node);
+            node.QueueFreeSafely();
+        }
+
+        GetPrivateFieldValue<System.Collections.IList>(combatRoom, "_creatureNodes")?.Clear();
+        GetPrivateFieldValue<System.Collections.IList>(combatRoom, "_removingCreatureNodes")?.Clear();
+
+        if (GetPrivateFieldValue<Control>(combatRoom, "_allyContainer") is { } allyContainer)
+            ClearNodeChildren(allyContainer);
+
+        if (GetPrivateFieldValue<Control>(combatRoom, "_enemyContainer") is { } enemyContainer)
+            ClearNodeChildren(enemyContainer);
+
+        SetPrivatePropertyValue(combatRoom, "EncounterSlots", null);
+        InvokePrivateMethod(combatRoom, "CreateAllyNodes");
+        InvokePrivateMethod(combatRoom, "CreateEnemyNodes");
+        InvokePrivateMethod(combatRoom, "AdjustCreatureScaleForAspectRatio");
+        InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
     }
     private static void ResetPlayerHandUi(NPlayerHand hand)
     {
