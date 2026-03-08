@@ -658,7 +658,8 @@ public sealed class UndoController
             templateSnapshot.CombatState.NextActionId,
             templateSnapshot.CombatState.NextHookId,
             templateSnapshot.CombatState.NextChecksumId,
-            templateSnapshot.CombatState.MonsterStates);
+            templateSnapshot.CombatState.MonsterStates,
+            templateSnapshot.CombatState.CardCostStates);
         return true;
     }
 
@@ -815,7 +816,8 @@ public sealed class UndoController
             templateSnapshot.CombatState.NextActionId,
             templateSnapshot.CombatState.NextHookId,
             templateSnapshot.CombatState.NextChecksumId,
-            templateSnapshot.CombatState.MonsterStates);
+            templateSnapshot.CombatState.MonsterStates,
+            templateSnapshot.CombatState.CardCostStates);
         return true;
     }
 
@@ -1123,7 +1125,8 @@ public sealed class UndoController
             templateSnapshot.CombatState.NextActionId,
             templateSnapshot.CombatState.NextHookId,
             templateSnapshot.CombatState.NextChecksumId,
-            templateSnapshot.CombatState.MonsterStates);
+            templateSnapshot.CombatState.MonsterStates,
+            templateSnapshot.CombatState.CardCostStates);
         return true;
     }
 
@@ -1201,7 +1204,8 @@ public sealed class UndoController
             templateSnapshot.CombatState.NextActionId,
             templateSnapshot.CombatState.NextHookId,
             templateSnapshot.CombatState.NextChecksumId,
-            templateSnapshot.CombatState.MonsterStates);
+            templateSnapshot.CombatState.MonsterStates,
+            templateSnapshot.CombatState.CardCostStates);
         return true;
     }
 
@@ -1897,7 +1901,7 @@ public sealed class UndoController
             RebuildActionQueues(runState.Players);
             runState.Rng.LoadFromSerializable(snapshot.FullState.Rng);
 
-            RestorePlayers(runState, combatState, snapshot.FullState);
+            RestorePlayers(runState, combatState, snapshot);
             RestoreCreatures(runState, combatState, snapshot.FullState);
             RestoreMonsterStates(combatState, snapshot.MonsterStates);
 
@@ -2530,7 +2534,8 @@ public sealed class UndoController
             RunManager.Instance.ActionQueueSet.NextActionId,
             RunManager.Instance.ActionQueueSynchronizer.NextHookId,
             RunManager.Instance.ChecksumTracker.NextId,
-            CaptureMonsterStates(combatState.Creatures));
+            CaptureMonsterStates(combatState.Creatures),
+            CaptureCardCostStates(runState));
     }
 
     private static IReadOnlyList<UndoMonsterState> CaptureMonsterStates(IReadOnlyList<Creature> creatures)
@@ -2574,6 +2579,65 @@ public sealed class UndoController
         return $"creature:{index}";
     }
 
+    private static IReadOnlyList<UndoPlayerPileCardCostState> CaptureCardCostStates(RunState runState)
+    {
+        List<UndoPlayerPileCardCostState> states = [];
+        foreach (Player player in runState.Players)
+        {
+            foreach (PileType pileType in CombatPileOrder)
+            {
+                CardPile? pile = CardPile.Get(pileType, player);
+                if (pile == null)
+                    continue;
+
+                states.Add(new UndoPlayerPileCardCostState
+                {
+                    PlayerNetId = player.NetId,
+                    PileType = pileType,
+                    Cards = [.. pile.Cards.Select(CaptureCardCostState)]
+                });
+            }
+        }
+
+        return states;
+    }
+
+    private static UndoCardCostState CaptureCardCostState(CardModel card)
+    {
+        CardEnergyCost energyCost = card.EnergyCost;
+        List<LocalCostModifier> localModifiers = GetPrivateFieldValue<List<LocalCostModifier>>(energyCost, "_localModifiers") ?? [];
+        List<TemporaryCardCost> temporaryStarCosts = GetPrivateFieldValue<List<TemporaryCardCost>>(card, "_temporaryStarCosts") ?? [];
+
+        return new UndoCardCostState
+        {
+            EnergyBaseCost = FindField(energyCost.GetType(), "_base")?.GetValue(energyCost) as int? ?? energyCost.Canonical,
+            CapturedXValue = FindField(energyCost.GetType(), "_capturedXValue")?.GetValue(energyCost) as int? ?? 0,
+            EnergyWasJustUpgraded = FindProperty(energyCost.GetType(), "WasJustUpgraded")?.GetValue(energyCost) as bool? ?? false,
+            EnergyLocalModifiers =
+            [
+                .. localModifiers.Select(static modifier => new UndoLocalCostModifierState
+                {
+                    Amount = modifier.Amount,
+                    Type = modifier.Type,
+                    Expiration = modifier.Expiration,
+                    IsReduceOnly = modifier.IsReduceOnly
+                })
+            ],
+            StarCostSet = FindField(card.GetType(), "_starCostSet")?.GetValue(card) as bool? ?? false,
+            BaseStarCost = FindField(card.GetType(), "_baseStarCost")?.GetValue(card) as int? ?? 0,
+            StarWasJustUpgraded = FindField(card.GetType(), "_wasStarCostJustUpgraded")?.GetValue(card) as bool? ?? false,
+            TemporaryStarCosts =
+            [
+                .. temporaryStarCosts.Select(static cost => new UndoTemporaryStarCostState
+                {
+                    Cost = cost.Cost,
+                    ClearsWhenTurnEnds = cost.ClearsWhenTurnEnds,
+                    ClearsWhenCardIsPlayed = cost.ClearsWhenCardIsPlayed
+                })
+            ]
+        };
+    }
+
     private static bool CanApplyFullStateInPlace(
         NetFullCombatState snapshot,
         RunState runState,
@@ -2600,9 +2664,9 @@ public sealed class UndoController
         return true;
     }
 
-    private static void RestorePlayers(RunState runState, CombatState combatState, NetFullCombatState snapshot)
+    private static void RestorePlayers(RunState runState, CombatState combatState, UndoCombatFullState snapshotState)
     {
-        foreach (NetFullCombatState.PlayerState playerState in snapshot.Players)
+        foreach (NetFullCombatState.PlayerState playerState in snapshotState.FullState.Players)
         {
             Player player = runState.GetPlayer(playerState.playerId)
                 ?? throw new InvalidOperationException($"Could not map player snapshot {playerState.playerId}.");
@@ -2614,7 +2678,7 @@ public sealed class UndoController
 
             RestoreRelics(player, playerState);
             RestorePotions(player, playerState);
-            RestorePlayerCombatState(player, combatState, playerState);
+            RestorePlayerCombatState(player, combatState, playerState, GetCardCostStatesForPlayer(snapshotState, player.NetId));
         }
     }
 
@@ -2655,7 +2719,7 @@ public sealed class UndoController
         }
     }
 
-    private static void RestorePlayerCombatState(Player player, CombatState combatState, NetFullCombatState.PlayerState playerState)
+    private static void RestorePlayerCombatState(Player player, CombatState combatState, NetFullCombatState.PlayerState playerState, IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardCostState>>? cardCostStatesByPile)
     {
         PlayerCombatState playerCombatState = player.PlayerCombatState
             ?? throw new InvalidOperationException($"Player {player.NetId} has no combat state.");
@@ -2676,13 +2740,16 @@ public sealed class UndoController
             CardPile pile = CardPile.Get(pileType, player)
                 ?? throw new InvalidOperationException($"Pile {pileType} was not available for player {player.NetId}.");
 
+            IReadOnlyList<UndoCardCostState>? pileCardCostStates = null;
+            cardCostStatesByPile?.TryGetValue(pileType, out pileCardCostStates);
             if (pilesByType.TryGetValue(pileType, out NetFullCombatState.CombatPileState pileState))
             {
-                foreach (NetFullCombatState.CardState cardState in pileState.cards)
+                for (int cardIndex = 0; cardIndex < pileState.cards.Count; cardIndex++)
                 {
+                    NetFullCombatState.CardState cardState = pileState.cards[cardIndex];
                     CardModel card = CardModel.FromSerializable(cardState.card);
                     combatState.AddCard(card, player);
-                    RestoreCardState(card, cardState);
+                    RestoreCardState(card, cardState, pileCardCostStates != null && cardIndex < pileCardCostStates.Count ? pileCardCostStates[cardIndex] : null);
                     pile.AddInternal(card, -1, true);
                 }
             }
@@ -2696,7 +2763,7 @@ public sealed class UndoController
         playerCombatState.RecalculateCardValues();
     }
 
-    private static void RestoreCardState(CardModel card, NetFullCombatState.CardState cardState)
+    private static void RestoreCardState(CardModel card, NetFullCombatState.CardState cardState, UndoCardCostState? costState)
     {
         HashSet<CardKeyword> desiredKeywords = cardState.keywords != null
             ? [.. cardState.keywords]
@@ -2723,6 +2790,64 @@ public sealed class UndoController
                 ModelDb.GetById<AfflictionModel>(cardState.affliction).ToMutable(),
                 cardState.afflictionCount);
         }
+
+        RestoreCardCostState(card, costState);
+    }
+
+    private static IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardCostState>>? GetCardCostStatesForPlayer(UndoCombatFullState snapshotState, ulong playerNetId)
+    {
+        Dictionary<PileType, IReadOnlyList<UndoCardCostState>> states = snapshotState.CardCostStates
+            .Where(static state => state != null)
+            .Where(state => state.PlayerNetId == playerNetId)
+            .ToDictionary(static state => state.PileType, static state => state.Cards);
+
+        return states.Count == 0 ? null : states;
+    }
+
+    private static void RestoreCardCostState(CardModel card, UndoCardCostState? costState)
+    {
+        if (costState == null)
+            return;
+
+        CardEnergyCost energyCost = card.EnergyCost;
+        SetPrivateFieldValue(energyCost, "_base", costState.EnergyBaseCost);
+        SetPrivateFieldValue(energyCost, "_capturedXValue", costState.CapturedXValue);
+        if (!TrySetPrivateAutoPropertyBackingField(energyCost, "WasJustUpgraded", costState.EnergyWasJustUpgraded))
+            SetPrivatePropertyValue(energyCost, "WasJustUpgraded", costState.EnergyWasJustUpgraded);
+        SetPrivateFieldValue(
+            energyCost,
+            "_localModifiers",
+            costState.EnergyLocalModifiers
+                .Select(static modifier => new LocalCostModifier(modifier.Amount, modifier.Type, modifier.Expiration, modifier.IsReduceOnly))
+                .ToList());
+
+        SetPrivateFieldValue(card, "_starCostSet", costState.StarCostSet);
+        SetPrivateFieldValue(card, "_baseStarCost", costState.BaseStarCost);
+        SetPrivateFieldValue(card, "_wasStarCostJustUpgraded", costState.StarWasJustUpgraded);
+        SetPrivateFieldValue(
+            card,
+            "_temporaryStarCosts",
+            costState.TemporaryStarCosts.Select(CreateTemporaryStarCost).ToList());
+
+        card.InvokeEnergyCostChanged();
+        InvokeCardStarCostChanged(card);
+    }
+
+    private static TemporaryCardCost CreateTemporaryStarCost(UndoTemporaryStarCostState costState)
+    {
+        if (!costState.ClearsWhenTurnEnds && !costState.ClearsWhenCardIsPlayed)
+            return TemporaryCardCost.ThisCombat(costState.Cost);
+
+        if (costState.ClearsWhenTurnEnds)
+            return TemporaryCardCost.ThisTurn(costState.Cost);
+
+        return TemporaryCardCost.UntilPlayed(costState.Cost);
+    }
+
+    private static void InvokeCardStarCostChanged(CardModel card)
+    {
+        if (FindField(card.GetType(), "StarCostChanged")?.GetValue(card) is Action starCostChanged)
+            starCostChanged();
     }
 
     private static void RestoreOrbQueue(Player player, NetFullCombatState.PlayerState playerState)

@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 
@@ -15,7 +16,8 @@ internal sealed class UndoCombatFullState
         uint nextActionId,
         uint nextHookId,
         uint nextChecksumId,
-        IReadOnlyList<UndoMonsterState> monsterStates)
+        IReadOnlyList<UndoMonsterState> monsterStates,
+        IReadOnlyList<UndoPlayerPileCardCostState> cardCostStates)
     {
         FullState = fullState;
         RoundNumber = roundNumber;
@@ -25,6 +27,7 @@ internal sealed class UndoCombatFullState
         NextHookId = nextHookId;
         NextChecksumId = nextChecksumId;
         MonsterStates = monsterStates;
+        CardCostStates = cardCostStates;
     }
 
     public NetFullCombatState FullState { get; }
@@ -42,4 +45,16 @@ internal sealed class UndoCombatFullState
     public uint NextChecksumId { get; }
 
     public IReadOnlyList<UndoMonsterState> MonsterStates { get; }
+
+    public IReadOnlyList<UndoPlayerPileCardCostState> CardCostStates { get; }
 }
+
+internal sealed class UndoPlayerPileCardCostState
+{
+    public required ulong PlayerNetId { get; init; }
+
+    public required PileType PileType { get; init; }
+
+    public required IReadOnlyList<UndoCardCostState> Cards { get; init; }
+}
+
