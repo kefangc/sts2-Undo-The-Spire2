@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 
 namespace UndoTheSpire2;
@@ -52,6 +52,10 @@ internal sealed class UndoScenarioReport
                 builder.AppendLine($"- Detail: {result.Detail}");
             if (result.UnsupportedCapabilities.Count > 0)
                 builder.AppendLine($"- Unsupported: {string.Join(", ", result.UnsupportedCapabilities)}");
+            if (result.MissingExpectedUnsupportedCapabilities.Count > 0)
+                builder.AppendLine($"- Missing expected unsupported: {string.Join(", ", result.MissingExpectedUnsupportedCapabilities)}");
+            if (result.UnexpectedUnsupportedCapabilities.Count > 0)
+                builder.AppendLine($"- Unexpected unsupported: {string.Join(", ", result.UnexpectedUnsupportedCapabilities)}");
             if (result.Assertions.Count > 0)
             {
                 builder.AppendLine("- Assertions:");
@@ -147,12 +151,27 @@ internal static class UndoScenarioRunner
     private static string BuildUnsupportedCapabilitiesMarkdown(IReadOnlyList<UndoScenarioExecutionResult> results)
     {
         IReadOnlyList<string> lines = results
-            .Where(static result => result.UnsupportedCapabilities.Count > 0)
-            .Select(result => $"- {result.Scenario.Id}: {string.Join(", ", result.UnsupportedCapabilities)}")
+            .Where(static result => result.UnsupportedCapabilities.Count > 0
+                || result.MissingExpectedUnsupportedCapabilities.Count > 0
+                || result.UnexpectedUnsupportedCapabilities.Count > 0)
+            .Select(BuildUnsupportedLine)
             .ToList();
 
         return lines.Count == 0
             ? "# Unsupported Capabilities Report" + Environment.NewLine + Environment.NewLine + "- none"
             : "# Unsupported Capabilities Report" + Environment.NewLine + Environment.NewLine + string.Join(Environment.NewLine, lines);
+    }
+
+    private static string BuildUnsupportedLine(UndoScenarioExecutionResult result)
+    {
+        List<string> parts = [];
+        if (result.UnsupportedCapabilities.Count > 0)
+            parts.Add($"actual={string.Join(", ", result.UnsupportedCapabilities)}");
+        if (result.MissingExpectedUnsupportedCapabilities.Count > 0)
+            parts.Add($"missing_expected={string.Join(", ", result.MissingExpectedUnsupportedCapabilities)}");
+        if (result.UnexpectedUnsupportedCapabilities.Count > 0)
+            parts.Add($"unexpected={string.Join(", ", result.UnexpectedUnsupportedCapabilities)}");
+
+        return $"- {result.Scenario.Id}: {string.Join("; ", parts)}";
     }
 }
