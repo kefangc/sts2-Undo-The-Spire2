@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Enchantments;
@@ -69,6 +69,8 @@ internal sealed class UndoPowerRuntimeState
     public string? ApplierCreatureKey { get; init; }
 
     public SerializableCard? StolenCard { get; init; }
+
+    public IReadOnlyList<ulong> TriggeredPlayerNetIds { get; init; } = [];
 
     public IReadOnlyList<UndoNamedBoolState> BoolProperties { get; init; } = [];
 

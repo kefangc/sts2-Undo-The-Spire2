@@ -17,7 +17,7 @@ UndoCombatHistoryPatch.cs::CSharpScript::5741456901897941953::1772966085::0::1::
 UndoCombatReplayPatch.cs::CSharpScript::3980643330047362053::1772880876::0::1::::<><><>0<>0<><>::
 UndoCombatReplayState.cs::CSharpScript::5973050901029664292::1772861636::0::1::::<><><>0<>0<><>::
 UndoCombatUiPatch.cs::CSharpScript::225854250559122010::1772877838::0::1::::<><><>0<>0<><>::
-UndoController.cs::CSharpScript::5998620401339571669::1772985423::0::1::::<><><>0<>0<><>::
+UndoController.cs::CSharpScript::5998620401339571669::1773047008::0::1::::<><><>0<>0<><>::
 UndoDebugLog.cs::CSharpScript::1157932936738139063::1772886412::0::1::::<><><>0<>0<><>::
 UndoHud.cs::CSharpScript::1823810180028517999::1772877610::0::1::::<><><>0<>0<><>::
 UndoHudButton.cs::CSharpScript::1238590992143433988::1772877610::0::1::::<><><>0<>0<><>::
@@ -25,7 +25,7 @@ UndoModdingScreenPatch.cs::CSharpScript::1632377966603205978::1772940212::0::1::
 UndoModSettings.cs::CSharpScript::438276657500970085::1772940212::0::1::::<><><>0<>0<><>::
 UndoMonsterState.cs::CSharpScript::6195696780495086906::1772959592::0::1::::<><><>0<>0<><>::
 UndoRunLifecyclePatch.cs::CSharpScript::7110818365268450082::1772853824::0::1::::<><><>0<>0<><>::
-UndoRuntimeState.cs::CSharpScript::6253571262004055937::1772964957::0::1::::<><><>0<>0<><>::
+UndoRuntimeState.cs::CSharpScript::6253571262004055937::1773040744::0::1::::<><><>0<>0<><>::
 UndoSnapshot.cs::CSharpScript::5995744066623674553::1772879520::0::1::::<><><>0<>0<><>::
 UndoSyntheticChoiceSession.cs::CSharpScript::498589617070793903::1772878869::0::1::::<><><>0<>0<><>::
 ::res://UndoTheSpire2/::1772853303

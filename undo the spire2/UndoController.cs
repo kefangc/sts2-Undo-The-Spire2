@@ -75,6 +75,7 @@ public sealed class UndoController
     private UndoSyntheticChoiceSession? _syntheticChoiceSession;
     private bool _blockUndoUntilNextPlayerTurn;
     private int _blockedTurnRound = -1;
+    private int _queuedHistoryMoves;
     private string? _lastRestoreFailureReason;
     private readonly Dictionary<string, int> _firstInSeriesPlayCountOverrides = [];
     private int _firstInSeriesPlayCountOverrideRound = -1;
@@ -112,21 +113,20 @@ public sealed class UndoController
         {
             while (node != null && node.Value.IsChoiceAnchor)
                 node = node.Next;
+
+            if (ReferenceEquals(snapshots, _pastSnapshots) && IsCurrentHiddenEndTurnChoiceAnchor(GetCurrentChoiceAnchorSnapshot()))
+            {
+                int currentReplayEventCount = GetCurrentChoiceAnchorSnapshot()?.ReplayEventCount ?? int.MinValue;
+                while (node != null
+                    && node.Value.ReplayEventCount >= currentReplayEventCount
+                    && (node.Value.IsChoiceAnchor || node.Value.ActionKind == UndoActionKind.EndTurn))
+                {
+                    node = node.Next;
+                }
+            }
         }
 
         return node?.Value;
-    }
-
-    private void DiscardHiddenChoiceAnchors(LinkedList<UndoSnapshot> snapshots, string operation)
-    {
-        if (UndoModSettings.EnableChoiceUndo)
-            return;
-
-        while (snapshots.First?.Value is UndoSnapshot snapshot && snapshot.IsChoiceAnchor)
-        {
-            snapshots.RemoveFirst();
-            MainFile.Logger.Info($"Skipped hidden choice anchor during {operation}. ReplayEvents={snapshot.ReplayEventCount}");
-        }
     }
 
     private void BeginTurnTransitionBlock()
@@ -164,13 +164,17 @@ public sealed class UndoController
 
     public void OnCombatHistoryCardPlayStarted(CombatState combatState, CardPlay cardPlay)
     {
-        if (IsRestoring || !_hasFirstInSeriesPlayCountOverride || !cardPlay.IsFirstInSeries)
+        if (IsRestoring || !cardPlay.IsFirstInSeries)
             return;
 
-        if (combatState.RoundNumber != _firstInSeriesPlayCountOverrideRound || combatState.CurrentSide != _firstInSeriesPlayCountOverrideSide)
+        if (!_hasFirstInSeriesPlayCountOverride
+            || combatState.RoundNumber != _firstInSeriesPlayCountOverrideRound
+            || combatState.CurrentSide != _firstInSeriesPlayCountOverrideSide)
         {
             ClearFirstInSeriesPlayCountOverrides();
-            return;
+            _firstInSeriesPlayCountOverrideRound = combatState.RoundNumber;
+            _firstInSeriesPlayCountOverrideSide = combatState.CurrentSide;
+            _hasFirstInSeriesPlayCountOverride = true;
         }
 
         string? creatureKey = TryResolveCreatureKey(combatState.Creatures, cardPlay.Card.Owner?.Creature);
@@ -185,27 +189,33 @@ public sealed class UndoController
     public bool TryOverrideEchoFormModifyCardPlayCount(EchoFormPower power, CardModel card, int playCount, out int result)
     {
         result = 0;
-        if (power.Owner == null || card.Owner?.Creature != power.Owner || power.CombatState == null)
+        if (power.Owner == null)
             return false;
 
-        CombatState combatState = power.CombatState;
+        CombatState? combatState = power.CombatState ?? CombatManager.Instance.DebugOnlyGetState();
+        if (combatState == null)
+            return false;
+
+        string? powerOwnerKey = TryResolveCreatureKey(combatState.Creatures, power.Owner);
+        string? cardOwnerKey = TryResolveCreatureKey(combatState.Creatures, card.Owner?.Creature);
+        if (string.IsNullOrWhiteSpace(powerOwnerKey) || powerOwnerKey != cardOwnerKey)
+            return false;
+
         int playCountSoFar;
         if (_hasFirstInSeriesPlayCountOverride
             && combatState.RoundNumber == _firstInSeriesPlayCountOverrideRound
             && combatState.CurrentSide == _firstInSeriesPlayCountOverrideSide)
         {
-            string? creatureKey = TryResolveCreatureKey(combatState.Creatures, power.Owner);
-            playCountSoFar = !string.IsNullOrWhiteSpace(creatureKey)
-                && _firstInSeriesPlayCountOverrides.TryGetValue(creatureKey, out int overrideCount)
+            playCountSoFar = _firstInSeriesPlayCountOverrides.TryGetValue(powerOwnerKey, out int overrideCount)
                 ? overrideCount
                 : 0;
         }
         else
         {
             playCountSoFar = CombatManager.Instance.History.CardPlaysStarted.Count(entry =>
-                entry.Actor == power.Owner
+                entry.HappenedThisTurn(combatState)
                 && entry.CardPlay.IsFirstInSeries
-                && entry.HappenedThisTurn(combatState));
+                && TryResolveCreatureKey(combatState.Creatures, entry.Actor) == powerOwnerKey);
         }
 
         result = playCountSoFar >= power.Amount ? playCount : playCount + 1;
@@ -428,9 +438,15 @@ public sealed class UndoController
 
         return false;
     }
-
     public void TryHandleUndoRequest(NCombatUi combatUi, string source)
     {
+        if (IsRestoring)
+        {
+            if (HasUndo)
+                Undo();
+            return;
+        }
+
         if (!CanUndoNow(combatUi))
         {
             MainFile.Logger.Info($"Ignored undo request from {source}. HasUndo={HasUndo}, CanRestore={CanRestoreState()}, UiBlocked={IsUiBlocking(combatUi)}");
@@ -443,6 +459,13 @@ public sealed class UndoController
 
     public void TryHandleRedoRequest(NCombatUi combatUi, string source)
     {
+        if (IsRestoring)
+        {
+            if (HasRedo)
+                Redo();
+            return;
+        }
+
         if (!CanRedoNow(combatUi))
         {
             MainFile.Logger.Info($"Ignored redo request from {source}. HasRedo={HasRedo}, CanRestore={CanRestoreState()}, UiBlocked={IsUiBlocking(combatUi)}");
@@ -455,7 +478,13 @@ public sealed class UndoController
 
     public void Undo()
     {
-        if (!HasUndo || IsRestoring)
+        if (IsRestoring)
+        {
+            _queuedHistoryMoves--;
+            return;
+        }
+
+        if (!HasUndo)
             return;
 
         TaskHelper.RunSafely(RestoreFromHistoryAsync(_pastSnapshots, _futureSnapshots, "undo"));
@@ -463,7 +492,13 @@ public sealed class UndoController
 
     public void Redo()
     {
-        if (!HasRedo || IsRestoring)
+        if (IsRestoring)
+        {
+            _queuedHistoryMoves++;
+            return;
+        }
+
+        if (!HasRedo)
             return;
 
         if (TryOpenChoiceRedoSession())
@@ -471,6 +506,34 @@ public sealed class UndoController
 
         TaskHelper.RunSafely(RestoreFromHistoryAsync(_futureSnapshots, _pastSnapshots, "redo"));
     }
+    private void ProcessQueuedHistoryMoves()
+    {
+        if (IsRestoring || _queuedHistoryMoves == 0)
+            return;
+
+        if (_queuedHistoryMoves < 0)
+        {
+            if (!HasUndo)
+            {
+                _queuedHistoryMoves = 0;
+                return;
+            }
+
+            _queuedHistoryMoves++;
+            Undo();
+            return;
+        }
+
+        if (!HasRedo)
+        {
+            _queuedHistoryMoves = 0;
+            return;
+        }
+
+        _queuedHistoryMoves--;
+        Redo();
+    }
+
     private bool TryOpenChoiceRedoSession()
     {
         if (!UndoModSettings.EnableChoiceUndo || !UndoModSettings.EnableUnifiedEffectMode)
@@ -490,13 +553,69 @@ public sealed class UndoController
         NotifyStateChanged();
         return true;
     }
-
     private static bool HasRestorableChoiceSession(UndoSelectionSessionState? selectionSession)
     {
         return selectionSession != null
             && (selectionSession.SupportedChoiceUiActive
                 || selectionSession.HandSelectionActive
                 || selectionSession.OverlaySelectionActive);
+    }
+
+    private static bool IsHiddenChoiceBoundarySnapshot(UndoSnapshot snapshot)
+    {
+        return !UndoModSettings.EnableChoiceUndo
+            && snapshot.ActionKind == UndoActionKind.EndTurn
+            && HasRestorableChoiceSession(snapshot.CombatState.SelectionSessionState);
+    }
+
+    private static bool IsAlwaysHiddenUndoBoundarySnapshot(UndoSnapshot snapshot)
+    {
+        return snapshot.ActionKind == UndoActionKind.EndTurn
+            && HasRestorableChoiceSession(snapshot.CombatState.SelectionSessionState);
+    }
+
+
+    private static bool IsCurrentEndTurnChoiceBoundarySnapshot(UndoSnapshot snapshot)
+    {
+        if (snapshot.ActionKind != UndoActionKind.EndTurn)
+            return false;
+
+        GameAction? action = RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
+        if (action?.State != GameActionState.GatheringPlayerChoice)
+            return false;
+
+        return TryCaptureChoiceSpecFromActionContext(snapshot) != null;
+    }
+    private static bool IsAlwaysHiddenUndoChoiceAnchorNode(LinkedListNode<UndoSnapshot>? node)
+    {
+        return node?.Value.IsChoiceAnchor == true
+            && node.Next?.Value is UndoSnapshot nextSnapshot
+            && IsAlwaysHiddenUndoBoundarySnapshot(nextSnapshot);
+    }
+    private static bool IsCurrentHiddenEndTurnChoiceAnchor(UndoSnapshot? snapshot)
+    {
+        return !UndoModSettings.EnableChoiceUndo
+            && snapshot?.IsChoiceAnchor == true
+            && snapshot.ChoiceSpec?.Kind == UndoChoiceKind.HandSelection
+            && snapshot.ChoiceSpec.SourcePileType == PileType.Hand
+            && snapshot.ActionKind == UndoActionKind.PlayerChoice;
+    }
+    private static bool ShouldSkipHiddenUndoSnapshot(
+        LinkedListNode<UndoSnapshot> node,
+        UndoSnapshot? currentChoiceAnchor)
+    {
+        if (UndoModSettings.EnableChoiceUndo)
+            return false;
+        if (IsCurrentHiddenEndTurnChoiceAnchor(currentChoiceAnchor))
+        {
+            int currentReplayEventCount = currentChoiceAnchor!.ReplayEventCount;
+            if (node.Value.ReplayEventCount < currentReplayEventCount)
+                return false;
+            return node.Value.IsChoiceAnchor || node.Value.ActionKind == UndoActionKind.EndTurn;
+        }
+        return IsAlwaysHiddenUndoChoiceAnchorNode(node)
+            || IsAlwaysHiddenUndoBoundarySnapshot(node.Value)
+            || node.Value.IsChoiceAnchor;
     }
 
     private LinkedListNode<UndoSnapshot>? FindPreferredRedoSnapshotNode(LinkedList<UndoSnapshot> source)
@@ -553,9 +672,20 @@ public sealed class UndoController
         if (!CanRestoreState())
             return;
 
-                UndoSnapshot? currentChoiceAnchor = GetCurrentChoiceAnchorSnapshot();
+        UndoSnapshot? currentChoiceAnchor = GetCurrentChoiceAnchorSnapshot();
         bool movedCurrentChoiceAnchor = MoveCurrentChoiceAnchorToDestinationIfNeeded(source, destination);
-        DiscardHiddenChoiceAnchors(source, operation);
+        if (operation == "undo")
+        {
+            while (source.First != null
+                && ShouldSkipHiddenUndoSnapshot(source.First, currentChoiceAnchor))
+            {
+                UndoSnapshot skippedSnapshot = source.First.Value;
+                source.RemoveFirst();
+                destination.AddFirst(skippedSnapshot);
+                TrimSnapshots(destination);
+                MainFile.Logger.Info($"Skipped hidden undo boundary during undo. ReplayEvents={skippedSnapshot.ReplayEventCount}, Kind={skippedSnapshot.ActionKind}, ChoiceAnchor={skippedSnapshot.IsChoiceAnchor}");
+            }
+        }
         List<UndoSnapshot> skippedRedoSnapshots = [];
         if (operation == "redo")
         {
@@ -616,6 +746,7 @@ public sealed class UndoController
         {
             IsRestoring = false;
             NotifyStateChanged();
+            ProcessQueuedHistoryMoves();
         }
     }
     private async Task<string> RestoreSnapshotAsync(UndoSnapshot snapshot, UndoSnapshot? baseSnapshot, UndoSnapshot? branchSnapshot)
@@ -709,7 +840,16 @@ public sealed class UndoController
             UndoChoiceResultKey? selectedKey = await ShowSyntheticChoiceSelectionAsync(session);
             if (_syntheticChoiceSession != session || selectedKey == null)
                 return;
-
+            if (await TryCompleteSyntheticRetainSelectionAsync(session, selectedKey))
+            {
+                _syntheticChoiceSession = null;
+                _lastResolvedChoiceSpec = session.ChoiceSpec;
+                _lastResolvedChoiceResultKey = selectedKey;
+                _futureSnapshots.Clear();
+                NotifyStateChanged();
+                MainFile.Logger.Info($"Applied live retain selection {selectedKey} for {session.ChoiceSpec.Kind}.");
+                return;
+            }
             if (session.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot)
                 && ReferenceEquals(_futureSnapshots.First?.Value, cachedBranchSnapshot))
             {
@@ -750,6 +890,33 @@ public sealed class UndoController
             if (_syntheticChoiceSession == session)
                 _syntheticChoiceSession = null;
         }
+    }
+    private async Task<bool> TryCompleteSyntheticRetainSelectionAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    {
+        if (session.AnchorSnapshot.ActionKind != UndoActionKind.EndTurn
+            || session.ChoiceSpec.Kind != UndoChoiceKind.HandSelection
+            || session.ChoiceSpec.SourcePileType != PileType.Hand)
+        {
+            return false;
+        }
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? me = combatState == null ? null : LocalContext.GetMe(combatState);
+        if (combatState == null || me == null || combatState.CurrentSide != CombatSide.Player)
+            return false;
+        IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(me).Cards;
+        foreach (int optionIndex in selectedKey.OptionIndexes)
+        {
+            if (optionIndex < 0 || optionIndex >= session.ChoiceSpec.SourcePileOptionIndexes.Count)
+                return false;
+            int handIndex = session.ChoiceSpec.SourcePileOptionIndexes[optionIndex];
+            if (handIndex < 0 || handIndex >= handCards.Count)
+                return false;
+            handCards[handIndex].GiveSingleTurnRetain();
+        }
+        RunManager.Instance.ActionQueueSynchronizer.SetCombatState(ActionSynchronizerCombatState.NotPlayPhase);
+        await CombatManager.Instance.EndPlayerTurnPhaseTwoInternal();
+        await CombatManager.Instance.SwitchFromPlayerToEnemySide();
+        return true;
     }
 
     private bool TryCreateSyntheticChoiceBranchSnapshot(
@@ -2325,11 +2492,14 @@ public sealed class UndoController
         if (!IsSinglePlayerCombat() || IsRestoring || _combatReplay == null)
             return false;
 
-        if (RunManager.Instance.ActionQueueSet.IsEmpty)
+        if (!CombatManager.Instance.EndingPlayerTurnPhaseOne && !CombatManager.Instance.EndingPlayerTurnPhaseTwo)
             return true;
 
+        NCombatUi? combatUi = NCombatRoom.Instance?.Ui;
         GameAction? action = RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
-        return action != null && action.State == GameActionState.GatheringPlayerChoice;
+        return combatUi != null
+            && action?.State == GameActionState.GatheringPlayerChoice
+            && IsSupportedChoiceUiActive(combatUi);
     }
 
     private static bool IsSinglePlayerCombat()
@@ -2349,6 +2519,9 @@ public sealed class UndoController
             return false;
         }
 
+        if (IsAlwaysHiddenUndoChoiceAnchorNode(source.First))
+            return false;
+
         source.RemoveFirst();
         destination.AddFirst(snapshot);
         TrimSnapshots(destination);
@@ -2359,33 +2532,17 @@ public sealed class UndoController
 
     private bool IsUiBlocking(NCombatUi combatUi)
     {
-        if (IsSupportedChoiceUiActive(combatUi))
-            return false;
-
-        if (IsUndoRedoTemporarilyBlocked(combatUi))
-            return true;
-
-        if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0)
-            return true;
-
-        if (NCapstoneContainer.Instance != null && NCapstoneContainer.Instance.InUse)
-            return true;
-
-        if (NTargetManager.Instance != null && NTargetManager.Instance.IsInSelection)
-            return true;
-
-        return combatUi.Hand.InCardPlay
-            || combatUi.Hand.IsInCardSelection
-            || IsCombatUiTransitioning(combatUi);
+        return IsUndoRedoTemporarilyBlocked(combatUi) || IsCombatUiTransitioning(combatUi);
     }
-
     private static bool IsCombatUiTransitioning(NCombatUi combatUi)
     {
-        if (CombatManager.Instance.EndingPlayerTurnPhaseOne || CombatManager.Instance.EndingPlayerTurnPhaseTwo)
-            return true;
+        if (!CombatManager.Instance.EndingPlayerTurnPhaseOne && !CombatManager.Instance.EndingPlayerTurnPhaseTwo)
+            return false;
 
-        return IsTweenRunning(combatUi.Hand, "_selectedCardScaleTween");
+        GameAction? action = RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
+        return action?.State != GameActionState.GatheringPlayerChoice || !IsSupportedChoiceUiActive(combatUi);
     }
+
     private UndoSnapshot? GetCurrentChoiceAnchorSnapshot()
     {
         if (_syntheticChoiceSession != null)
@@ -2706,7 +2863,7 @@ public sealed class UndoController
         return keyEvent.Keycode == key || keyEvent.PhysicalKeycode == key || keyEvent.KeyLabel == key;
     }
 
-    private static UndoCombatFullState CaptureCurrentCombatFullState()
+    private UndoCombatFullState CaptureCurrentCombatFullState()
     {
         RunState runState = RunManager.Instance.DebugOnlyGetState()
             ?? throw new InvalidOperationException("Run state was not available while capturing undo snapshot.");
@@ -2879,6 +3036,7 @@ public sealed class UndoController
                     StolenCard = power is SwipePower swipe && swipe.StolenCard != null
                         ? ClonePacketSerializable(swipe.StolenCard.ToSerializable())
                         : null,
+                    TriggeredPlayerNetIds = CaptureTriggeredPlayerNetIds(power),
                     BoolProperties = CapturePowerRuntimeBoolProperties(power),
                     IntProperties = CaptureRuntimeIntProperties(power, "Amount"),
                     EnumProperties = CaptureRuntimeEnumProperties(power)
@@ -2927,9 +3085,21 @@ public sealed class UndoController
             ChoiceSpec = TryCaptureCurrentChoiceSpecFromUi()
         };
     }
-
-    private static IReadOnlyList<UndoFirstInSeriesPlayCountState> CaptureFirstInSeriesPlayCounts(CombatState combatState)
+    private IReadOnlyList<UndoFirstInSeriesPlayCountState> CaptureFirstInSeriesPlayCounts(CombatState combatState)
     {
+        if (_hasFirstInSeriesPlayCountOverride
+            && combatState.RoundNumber == _firstInSeriesPlayCountOverrideRound
+            && combatState.CurrentSide == _firstInSeriesPlayCountOverrideSide)
+        {
+            return _firstInSeriesPlayCountOverrides
+                .Select(static pair => new UndoFirstInSeriesPlayCountState
+                {
+                    CreatureKey = pair.Key,
+                    Count = pair.Value
+                })
+                .ToList();
+        }
+
         List<UndoFirstInSeriesPlayCountState> states = [];
         IReadOnlyList<Creature> creatures = combatState.Creatures;
         foreach (CardPlayStartedEntry entry in CombatManager.Instance.History.CardPlaysStarted)
@@ -2941,7 +3111,6 @@ public sealed class UndoController
             if (string.IsNullOrWhiteSpace(creatureKey))
                 continue;
 
-            UndoFirstInSeriesPlayCountState? existing = states.FirstOrDefault(static state => false);
             for (int i = 0; i < states.Count; i++)
             {
                 if (states[i].CreatureKey != creatureKey)
@@ -2967,6 +3136,27 @@ public sealed class UndoController
         }
 
         return states;
+    }
+
+    private static IReadOnlyList<ulong> CaptureTriggeredPlayerNetIds(PowerModel power)
+    {
+        if (power is not VitalSparkPower)
+            return [];
+
+        if (FindField(typeof(PowerModel), "_internalData")?.GetValue(power) is not { } internalData)
+            return [];
+
+        if (FindField(internalData.GetType(), "playersTriggeredThisTurn")?.GetValue(internalData) is not System.Collections.IEnumerable triggeredPlayers)
+            return [];
+
+        List<ulong> playerNetIds = [];
+        foreach (object? entry in triggeredPlayers)
+        {
+            if (entry is Player player)
+                playerNetIds.Add(player.NetId);
+        }
+
+        return playerNetIds;
     }
 
     private static IReadOnlyList<UndoNamedBoolState> CapturePowerRuntimeBoolProperties(PowerModel power)
@@ -3155,18 +3345,35 @@ public sealed class UndoController
         }
     }
 
-    private static void RestoreSpecialPowerRuntimeState(PowerModel power, UndoPowerRuntimeState runtimeState)
+    private static void RestoreSpecialPowerRuntimeState(PowerModel power, UndoPowerRuntimeState runtimeState, CombatState combatState)
     {
-        UndoNamedBoolState? isRevivingState = runtimeState.BoolProperties.FirstOrDefault(static state => state.Name == "IsReviving");
-        if (isRevivingState == null)
-            return;
-
         if (FindField(typeof(PowerModel), "_internalData")?.GetValue(power) is not { } internalData)
             return;
 
+        UndoNamedBoolState? isRevivingState = runtimeState.BoolProperties.FirstOrDefault(static state => state.Name == "IsReviving");
         FieldInfo? isRevivingField = FindField(internalData.GetType(), "isReviving");
-        if (isRevivingField?.FieldType == typeof(bool))
+        if (isRevivingState != null && isRevivingField?.FieldType == typeof(bool))
             isRevivingField.SetValue(internalData, isRevivingState.Value);
+
+        if (power is not VitalSparkPower)
+            return;
+
+        object? triggeredPlayersValue = FindField(internalData.GetType(), "playersTriggeredThisTurn")?.GetValue(internalData);
+        if (triggeredPlayersValue == null)
+            return;
+
+        MethodInfo? clearMethod = triggeredPlayersValue.GetType().GetMethod("Clear", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+        MethodInfo? addMethod = triggeredPlayersValue.GetType().GetMethod("Add", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic, null, [typeof(Player)], null);
+        if (clearMethod == null || addMethod == null)
+            return;
+
+        clearMethod.Invoke(triggeredPlayersValue, null);
+        foreach (ulong playerNetId in runtimeState.TriggeredPlayerNetIds)
+        {
+            Player? player = combatState.GetPlayer(playerNetId);
+            if (player != null)
+                addMethod.Invoke(triggeredPlayersValue, [player]);
+        }
     }
 
     private static void RestoreRuntimeBoolProperties(object target, IReadOnlyList<UndoNamedBoolState> states)
@@ -3824,7 +4031,7 @@ public sealed class UndoController
                 RestoreRuntimeBoolProperties(power, runtimeState.BoolProperties);
                 RestoreRuntimeIntProperties(power, runtimeState.IntProperties);
                 RestoreRuntimeEnumProperties(power, runtimeState.EnumProperties);
-                RestoreSpecialPowerRuntimeState(power, runtimeState);
+                RestoreSpecialPowerRuntimeState(power, runtimeState, combatState);
                 if (power is not SwipePower swipe)
                     continue;
 
@@ -4790,6 +4997,13 @@ public sealed class UndoController
 
     private sealed record SyntheticTransformVfxCard(SerializableCard Card, int SourcePileIndex);
 }
+
+
+
+
+
+
+
 
 
 
