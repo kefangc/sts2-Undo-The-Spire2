@@ -2254,6 +2254,14 @@ public sealed class UndoController
                 _lastRestoreCapabilityReport = creatureStatusReport;
                 return false;
             }
+
+            RestoreCapabilityReport creatureReconciliationReport = UndoCreatureReconciliationCodecRegistry.Restore(snapshot.MonsterStates, combatState.Creatures);
+            if (creatureReconciliationReport.IsFailure)
+            {
+                _lastRestoreFailureReason = creatureReconciliationReport.Detail ?? creatureReconciliationReport.Result.ToString();
+                _lastRestoreCapabilityReport = creatureReconciliationReport;
+                return false;
+            }
             RestoreCapabilityReport actionKernelReport = UndoActionKernelService.Restore(snapshot.ActionKernelState, runState);
             _lastRestoreCapabilityReport = actionKernelReport;
             if (actionKernelReport.IsFailure)
@@ -3027,6 +3035,9 @@ public sealed class UndoController
             bool performedFirstMove = FindField(moveStateMachine.GetType(), "_performedFirstMove")?.GetValue(moveStateMachine) is true;
             bool nextMovePerformedAtLeastOnce = monster.NextMove != null
                 && FindField(monster.NextMove.GetType(), "_performedAtLeastOnce")?.GetValue(monster.NextMove) is true;
+            string? transientNextMoveFollowUpId = monster.NextMove?.Id == MonsterModel.stunnedMoveId
+                ? monster.NextMove.FollowUpState?.Id ?? monster.NextMove.FollowUpStateId
+                : null;
             string? specialNodeStateKey = creature.Powers.OfType<SwipePower>().Any(static power => power.StolenCard != null)
                 ? "%StolenCardPos"
                 : null;
@@ -3040,6 +3051,7 @@ public sealed class UndoController
                 SpawnedThisTurn = monster.SpawnedThisTurn,
                 PerformedFirstMove = performedFirstMove,
                 NextMovePerformedAtLeastOnce = nextMovePerformedAtLeastOnce,
+                TransientNextMoveFollowUpId = transientNextMoveFollowUpId,
                 SpecialNodeStateKey = specialNodeStateKey,
                 StateLogIds = [.. moveStateMachine.StateLog.Select(static state => state.Id)]
             });
@@ -4404,6 +4416,8 @@ public sealed class UndoController
             return;
 
         monster.Creature.SlotName = state.SlotName;
+        UndoReflectionUtil.TrySetPropertyValue(monster, "SpawnedThisTurn", state.SpawnedThisTurn);
+        UndoReflectionUtil.TrySetFieldValue(moveStateMachine, "_performedFirstMove", state.PerformedFirstMove);
         if (moveStateMachine.StateLog is List<MonsterState> stateLog)
         {
             stateLog.Clear();
@@ -4430,6 +4444,11 @@ public sealed class UndoController
 
         if (state.CurrentStateId != null && moveStateMachine.States.TryGetValue(state.CurrentStateId, out MonsterState? currentState))
             moveStateMachine.ForceCurrentState(currentState);
+
+        // Transient stunned moves are recreated during creature reconciliation
+        // because the live MoveState carries monster-specific callbacks.
+        if (state.NextMoveId == MonsterModel.stunnedMoveId)
+            return;
 
         if (state.NextMoveId != null && moveStateMachine.States.TryGetValue(state.NextMoveId, out MonsterState? nextState) && nextState is MoveState moveState)
         {

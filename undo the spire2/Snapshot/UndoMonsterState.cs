@@ -1,4 +1,6 @@
-// Captures monster move-machine metadata that supplements official full state.`r`n// Sleep/stun/hover runtime booleans now live in CreatureStatusRuntimeState.`r`nusing System.Collections.Generic;
+// Captures monster move-machine metadata that supplements official full state.
+// Sleep/stun/hover runtime booleans now live in CreatureStatusRuntimeState.
+using System.Collections.Generic;
 
 namespace UndoTheSpire2;
 
@@ -19,6 +21,8 @@ internal sealed class UndoMonsterState
     public bool PerformedFirstMove { get; init; }
 
     public bool NextMovePerformedAtLeastOnce { get; init; }
+
+    public string? TransientNextMoveFollowUpId { get; init; }
 
     public string? SpecialNodeStateKey { get; init; }
 

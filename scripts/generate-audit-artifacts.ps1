@@ -103,10 +103,9 @@ $knownCases = @(
     [pscustomobject]@{ id='infested-prism'; title='Infested Prism'; category='monster'; sourceFiles=@('InfestedPrism.cs','VitalSparkPower.cs'); primaryRisk='playersTriggeredThisTurn'; scenarioTags=@('monster','power','internal-data'); assertions=@('first_damage_only_triggers_once_after_undo') },
     [pscustomobject]@{ id='decimillipede'; title='Decimillipede'; category='monster'; sourceFiles=@('DecimillipedeSegment.cs','ReattachPower.cs'); primaryRisk='revive topology'; scenarioTags=@('monster','revive','topology'); assertions=@('reviving_state_restores','segment_rejoins_correctly') },
     [pscustomobject]@{ id='door-maker'; title='Doormaker'; category='monster'; sourceFiles=@('Door.cs','Doormaker.cs','DoorRevivalPower.cs'); primaryRisk='cross-creature topology'; scenarioTags=@('monster','boss','topology'); assertions=@('door_phase_restores','times_got_back_in_restores') },
-    [pscustomobject]@{ id='paels-legion'; title='Pael''s Legion'; category='relic'; sourceFiles=@('PaelsLegion.cs','PaelsLegion.cs'); primaryRisk='pet ownership topology'; scenarioTags=@('relic','pet','topology'); assertions=@('pet_role_restores','pet_owner_restores','no_duplicate_pet_after_undo','pet_visual_state_restores') },
-    [pscustomobject]@{ id='slumbering-beetle'; title='Slumbering Beetle'; category='monster'; sourceFiles=@('SlumberingBeetle.cs','SlumberPower.cs'); primaryRisk='sleeping runtime state'; scenarioTags=@('monster','sleep','stun'); assertions=@('status_runtime_restores','creature_visual_state_restores') },
-    [pscustomobject]@{ id='lagavulin-matriarch'; title='Lagavulin Matriarch'; category='monster'; sourceFiles=@('LagavulinMatriarch.cs','AsleepPower.cs'); primaryRisk='sleeping runtime state'; scenarioTags=@('monster','sleep','wake'); assertions=@('status_runtime_restores','creature_visual_state_restores') },
-    [pscustomobject]@{ id='bowlbug-rock'; title='Bowlbug Rock'; category='monster'; sourceFiles=@('BowlbugRock.cs'); primaryRisk='stunned runtime state'; scenarioTags=@('monster','stun'); assertions=@('status_runtime_restores','creature_visual_state_restores') },
+    [pscustomobject]@{ id='paels-legion'; title='Pael''s Legion'; category='relic'; sourceFiles=@('PaelsLegion.cs'); primaryRisk='pet ownership topology'; scenarioTags=@('relic','pet','topology'); assertions=@('pet_role_restores','pet_owner_restores','no_duplicate_pet_after_undo','pet_visual_state_restores') },
+    [pscustomobject]@{ id='slumbering-beetle'; title='Slumbering Beetle'; category='monster'; sourceFiles=@('SlumberingBeetle.cs','SlumberPower.cs'); primaryRisk='sleeping runtime state'; scenarioTags=@('monster','sleep','stun'); assertions=@('status_runtime_restores','creature_visual_state_restores','creature_intent_state_restores') },
+    [pscustomobject]@{ id='lagavulin-matriarch'; title='Lagavulin Matriarch'; category='monster'; sourceFiles=@('LagavulinMatriarch.cs','AsleepPower.cs'); primaryRisk='sleeping runtime state'; scenarioTags=@('monster','sleep','wake'); assertions=@('status_runtime_restores','creature_visual_state_restores','creature_intent_state_restores') },
     [pscustomobject]@{ id='thieving-hopper'; title='Thieving Hopper'; category='monster'; sourceFiles=@('ThievingHopper.cs'); primaryRisk='hover and stun runtime'; scenarioTags=@('monster','hover','stun'); assertions=@('status_runtime_restores','creature_visual_state_restores') },
     [pscustomobject]@{ id='fat-gremlin'; title='Fat Gremlin'; category='monster'; sourceFiles=@('FatGremlin.cs'); primaryRisk='spawned stunned runtime'; scenarioTags=@('monster','stun'); assertions=@('status_runtime_restores','creature_visual_state_restores') },
     [pscustomobject]@{ id='sneaky-gremlin'; title='Sneaky Gremlin'; category='monster'; sourceFiles=@('SneakyGremlin.cs'); primaryRisk='spawned stunned runtime'; scenarioTags=@('monster','stun'); assertions=@('status_runtime_restores','creature_visual_state_restores') },
@@ -124,18 +123,16 @@ $implementedCodecIds = @()
 $runtimeCodecFile = Join-Path $RepoRoot 'Restore\UndoRuntimeCodecs.cs'
 $actionCodecFile = Join-Path $RepoRoot 'Restore\UndoActionCodecs.cs'
 $statusCodecFile = Join-Path $RepoRoot 'Restore\UndoCreatureStatusCodecs.cs'
+$reconciliationCodecFile = Join-Path $RepoRoot 'Restore\UndoCreatureReconciliationCodecs.cs'
 $codecTexts = @()
-if (Test-Path $runtimeCodecFile) {
-    $codecTexts += Read-Text $runtimeCodecFile
-}
-if (Test-Path $actionCodecFile) {
-    $codecTexts += Read-Text $actionCodecFile
-}
-if (Test-Path $statusCodecFile) {
-    $codecTexts += Read-Text $statusCodecFile
-}
+if (Test-Path $runtimeCodecFile) { $codecTexts += Read-Text $runtimeCodecFile }
+if (Test-Path $actionCodecFile) { $codecTexts += Read-Text $actionCodecFile }
+if (Test-Path $statusCodecFile) { $codecTexts += Read-Text $statusCodecFile }
+if (Test-Path $reconciliationCodecFile) { $codecTexts += Read-Text $reconciliationCodecFile }
 if ($codecTexts.Count -gt 0) {
-    $implementedCodecIds = ($codecTexts | ForEach-Object { ([regex]::Matches($_, 'CodecId\s*=>\s*"([^"]+)"') | ForEach-Object { $_.Groups[1].Value }) }) | Sort-Object -Unique
+    $implementedCodecIds = ($codecTexts | ForEach-Object {
+        ([regex]::Matches($_, 'CodecId\s*=>\s*"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+    }) | Sort-Object -Unique
 }
 
 $officialRuntimePatterns = @(
@@ -159,6 +156,11 @@ $officialRuntimePatterns = @(
     [pscustomobject]@{ id='status:CeremonialBeast.IsStunnedByPlowRemoval'; category='status'; sourceFile='CeremonialBeast.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:CeremonialBeast.IsStunnedByPlowRemoval') },
     [pscustomobject]@{ id='status:CeremonialBeast.InMidCharge'; category='status'; sourceFile='CeremonialBeast.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:CeremonialBeast.InMidCharge') },
     [pscustomobject]@{ id='status:Wriggler.StartStunned'; category='status'; sourceFile='Wriggler.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:Wriggler.StartStunned') },
+    [pscustomobject]@{ id='reconcile:SlumberingBeetle.MoveIntent'; category='reconciliation'; sourceFile='SlumberingBeetle.cs'; stateShape='power-driven move reconciliation'; implemented=($implementedCodecIds -contains 'reconcile:SlumberingBeetle.MoveIntent') },
+    [pscustomobject]@{ id='reconcile:LagavulinMatriarch.MoveIntent'; category='reconciliation'; sourceFile='LagavulinMatriarch.cs'; stateShape='power-driven move reconciliation'; implemented=($implementedCodecIds -contains 'reconcile:LagavulinMatriarch.MoveIntent') },
+    [pscustomobject]@{ id='reconcile:GenericTransientStun'; category='reconciliation'; sourceFile='Creature.cs'; stateShape='transient stunned move recreation'; implemented=($implementedCodecIds -contains 'reconcile:GenericTransientStun') },
+    [pscustomobject]@{ id='reconcile:CeremonialBeast.TransientStun'; category='reconciliation'; sourceFile='CeremonialBeast.cs'; stateShape='custom stunned callback'; implemented=($implementedCodecIds -contains 'reconcile:CeremonialBeast.TransientStun') },
+    [pscustomobject]@{ id='reconcile:Wriggler.StartStunned'; category='reconciliation'; sourceFile='Wriggler.cs'; stateShape='conditional initial move reconciliation'; implemented=($implementedCodecIds -contains 'reconcile:Wriggler.StartStunned') },
     [pscustomobject]@{ id='topology:DoorAndDoormaker'; category='topology'; sourceFile='Door.cs'; stateShape='linked creature refs + phase'; implemented=$true },
     [pscustomobject]@{ id='topology:Decimillipede'; category='topology'; sourceFile='DecimillipedeSegment.cs'; stateShape='segment graph + starter move'; implemented=$true },
     [pscustomobject]@{ id='topology:TestSubject'; category='topology'; sourceFile='TestSubject.cs'; stateShape='phase state'; implemented=$true },
@@ -175,7 +177,12 @@ $codecRegistrySeed = [pscustomobject]@{
         'power:VigorPower.commandToModify',
         'power:ReattachPower.isReviving',
         'relic:PaelsLegion.affectedCardPlay',
-        'action:WellLaidPlans.choice'
+        'action:WellLaidPlans.choice',
+        'reconcile:SlumberingBeetle.MoveIntent',
+        'reconcile:LagavulinMatriarch.MoveIntent',
+        'reconcile:GenericTransientStun',
+        'reconcile:CeremonialBeast.TransientStun',
+        'reconcile:Wriggler.StartStunned'
     )
 }
 $codecRegistrySeed | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $artifactsDir 'codec-registry-seed.json')
@@ -229,21 +236,15 @@ Repo: `$RepoRoot`
 - History-derived files: $($stateSourceCounts.HistoryDerived)
 - Simple runtime property files: $($stateSourceCounts.SimpleRuntimeProperty)
 - Runtime object graph files: $($stateSourceCounts.RuntimeObjectGraph)
-- Action continuation related files: $($stateSourceCounts.ActionContinuation)
-- CombatHistory entry types: $($historyEntries.Count)
+- Action continuation files: $($stateSourceCounts.ActionContinuation)
 
-## Source Taxonomy
-- `SavedProperty`: prefer official serialization and only supplement display/runtime leftovers.
-- `History-derived`: requires full `CombatHistoryState`, not ad hoc counters.
-- `Simple runtime property`: private bool/int/enum can stay on property capture path.
-- `Runtime object graph`: requires explicit codec with stable refs or detached fallbacks.
-- `Action continuation`: requires paused choice/action kernel, not synthetic-only restore.
-
-## Representative Cases
-- `WellLaidPlansPower`: paused choice continuation through `CardSelectCmd.FromHand`.
-- `ForgottenRitual`: card exhaust history through `CardExhaustedEntry`.
-- `AutomationPower`: `_internalData.cardsLeft` counter.
-- `VitalSparkPower`: `_internalData.playersTriggeredThisTurn`.
+## Coverage focus
+- `WellLaidPlans`: paused hand selection anchor and branch-state restore.
+- `PaelsLegion`: pet ownership topology and special visual normalization.
+- `SlumberingBeetle` / `LagavulinMatriarch`: power-driven sleep/wake move reconciliation.
+- `BowlbugRock`, `ThievingHopper`, `FatGremlin`, `SneakyGremlin`, `CeremonialBeast`, `Wriggler`: stunned/sleeping runtime plus transient move reconciliation.
+- `AutomationPower`: private combat counter.
+- `VitalSparkPower`: `HashSet<Player>` runtime graph.
 - `PenNib`: private `AttackToDouble` card reference.
 - `Door + Doormaker`: cross-creature topology and revive phase.
 
@@ -261,6 +262,7 @@ Generated: $(Get-Date -Format s)
 ## Cross-object topology
 - `Door.cs` + `Doormaker.cs` + `DoorRevivalPower.cs`: door/doormaker references, follow-up state, phase counters.
 - `DecimillipedeSegment.cs` + `ReattachPower.cs`: revive lifecycle spans creature state machine and power internal data.
+- `PaelsLegion.cs`: pet owner, ally list membership, special visual state.
 
 ## Runtime object graph
 - `VitalSparkPower.cs`: `HashSet<Player>`.
@@ -269,9 +271,10 @@ Generated: $(Get-Date -Format s)
 - `DampenPower.cs`: `HashSet<Creature>` plus `Dictionary<CardModel,int>`.
 - `PenNib.cs`: card reference bound to next attack.
 
-## History identity
-- `HistoryCourse.cs`, `Bolas.cs`, `Fetch.cs`, `ThrummingHatchet.cs` depend on card identity inside history entries.
-- `EmotionChip.cs`, `GangUp.cs`, `BeatIntoShape.cs` depend on creature and damage result identity inside history entries.
+## Power-driven reconciliation
+- `SlumberingBeetle.cs` + `SlumberPower.cs`: sleep/stun/rollout branch depends on restored power and transient stunned move.
+- `LagavulinMatriarch.cs` + `AsleepPower.cs`: asleep/stunned/slash branch depends on restored power and transient stunned move.
+- `CeremonialBeast.cs`: plow charge and plow-removal stun must not cross wires after restore.
 
 ## Action / choice
 - `WellLaidPlansPower.cs` and other choice-bearing actions need paused continuation restore to avoid black-screen replay.
@@ -291,7 +294,7 @@ Implemented runtime codecs: $($implementedCodecIds.Count)
 - This report is generated from official source scanning plus curated known regressions.
 - The cache artifacts are intended to be implementation inputs for the undo kernel refactor.
 - Action codec coverage and runtime closed-loop are tracked separately; static cache generation does not imply a live runtime pass.
-- Runtime coverage now includes card, relic, power, topology, and action registry seeds.
+- Runtime coverage now includes card, relic, power, topology, status, reconciliation, and action registry seeds.
 "@
 $auditSummary | Set-Content (Join-Path $reportsDir 'audit-summary.md')
 
@@ -314,14 +317,14 @@ function Get-ScenarioDeclaredSupport([string]$ScenarioId) {
         'decimillipede' { return $officialRuntimePatterns.Where({ $_.id -eq 'topology:Decimillipede' }).implemented -contains $true }
         'door-maker' { return $officialRuntimePatterns.Where({ $_.id -eq 'topology:DoorAndDoormaker' }).implemented -contains $true }
         'paels-legion' { return $officialRuntimePatterns.Where({ $_.id -eq 'relic:PaelsLegion.affectedCardPlay' }).implemented -contains $true }
-        'slumbering-beetle' { return $officialRuntimePatterns.Where({ $_.id -eq 'status:SlumberingBeetle.IsAwake' }).implemented -contains $true }
-        'lagavulin-matriarch' { return $officialRuntimePatterns.Where({ $_.id -eq 'status:LagavulinMatriarch.IsAwake' }).implemented -contains $true }
-        'bowlbug-rock' { return $officialRuntimePatterns.Where({ $_.id -eq 'status:BowlbugRock.IsOffBalance' }).implemented -contains $true }
-        'thieving-hopper' { return $officialRuntimePatterns.Where({ $_.id -eq 'status:ThievingHopper.IsHovering' }).implemented -contains $true }
-        'fat-gremlin' { return $officialRuntimePatterns.Where({ $_.id -eq 'status:FatGremlin.IsAwake' }).implemented -contains $true }
-        'sneaky-gremlin' { return $officialRuntimePatterns.Where({ $_.id -eq 'status:SneakyGremlin.IsAwake' }).implemented -contains $true }
-        'ceremonial-beast' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:CeremonialBeast.IsStunnedByPlowRemoval' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'status:CeremonialBeast.InMidCharge' }).implemented -contains $true) }
-        'wriggler' { return $officialRuntimePatterns.Where({ $_.id -eq 'status:Wriggler.StartStunned' }).implemented -contains $true }
+        'slumbering-beetle' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:SlumberingBeetle.IsAwake' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:SlumberingBeetle.MoveIntent' }).implemented -contains $true) }
+        'lagavulin-matriarch' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:LagavulinMatriarch.IsAwake' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:LagavulinMatriarch.MoveIntent' }).implemented -contains $true) }
+        'bowlbug-rock' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:BowlbugRock.IsOffBalance' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:GenericTransientStun' }).implemented -contains $true) }
+        'thieving-hopper' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:ThievingHopper.IsHovering' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:GenericTransientStun' }).implemented -contains $true) }
+        'fat-gremlin' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:FatGremlin.IsAwake' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:GenericTransientStun' }).implemented -contains $true) }
+        'sneaky-gremlin' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:SneakyGremlin.IsAwake' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:GenericTransientStun' }).implemented -contains $true) }
+        'ceremonial-beast' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:CeremonialBeast.IsStunnedByPlowRemoval' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'status:CeremonialBeast.InMidCharge' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:CeremonialBeast.TransientStun' }).implemented -contains $true) }
+        'wriggler' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:Wriggler.StartStunned' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:Wriggler.StartStunned' }).implemented -contains $true) }
         'pen-nib' { return $officialRuntimePatterns.Where({ $_.id -eq 'relic:PenNib.AttackToDouble' }).implemented -contains $true }
         'death-march' { return $officialRuntimePatterns.Where({ $_.id -eq 'history:CombatHistory.entries' }).implemented -contains $true }
         default { return $true }
@@ -343,7 +346,18 @@ $((@($knownCases) | ForEach-Object {
 $scenarioRunReport | Set-Content (Join-Path $reportsDir 'scenario-run-report.md')
 
 $unsupportedCapabilityIds = @($officialRuntimePatterns | Where-Object { -not $_.implemented } | ForEach-Object { $_.id })
-$runtimePendingIds = @('well-laid-plans:runtime_closed_loop_pending','paels-legion:runtime_closed_loop_pending','slumbering-beetle:runtime_closed_loop_pending','lagavulin-matriarch:runtime_closed_loop_pending','bowlbug-rock:runtime_closed_loop_pending','thieving-hopper:runtime_closed_loop_pending','fat-gremlin:runtime_closed_loop_pending','sneaky-gremlin:runtime_closed_loop_pending','ceremonial-beast:runtime_closed_loop_pending','wriggler:runtime_closed_loop_pending')
+$runtimePendingIds = @(
+    'well-laid-plans:runtime_closed_loop_pending',
+    'paels-legion:runtime_closed_loop_pending',
+    'slumbering-beetle:runtime_closed_loop_pending',
+    'lagavulin-matriarch:runtime_closed_loop_pending',
+    'bowlbug-rock:runtime_closed_loop_pending',
+    'thieving-hopper:runtime_closed_loop_pending',
+    'fat-gremlin:runtime_closed_loop_pending',
+    'sneaky-gremlin:runtime_closed_loop_pending',
+    'ceremonial-beast:runtime_closed_loop_pending',
+    'wriggler:runtime_closed_loop_pending'
+)
 $unsupportedCapabilityLines = @()
 if ($unsupportedCapabilityIds.Count -gt 0) {
     $unsupportedCapabilityLines += $unsupportedCapabilityIds | ForEach-Object { "- $_" }
@@ -360,7 +374,3 @@ $($unsupportedCapabilityLines -join "`r`n")
 $unsupportedCapabilitiesReport | Set-Content (Join-Path $reportsDir 'unsupported-capabilities-report.md')
 
 Write-Host "Generated audit artifacts under $CacheRoot"
-
-
-
-

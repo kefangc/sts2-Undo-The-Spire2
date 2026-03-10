@@ -177,16 +177,9 @@ internal static class UndoCreatureTopologyCodecRegistry
 
     private static void RestoreCommonMonsterTopology(MonsterModel monster, CreatureTopologyState state)
     {
+        // Topology owns slot and linked-creature relationships only. Move-state
+        // restoration is handled by UndoMonsterState plus reconciliation.
         monster.Creature.SlotName = state.SlotName;
-        MonsterMoveStateMachine? moveStateMachine = monster.MoveStateMachine;
-        if (moveStateMachine == null)
-            return;
-
-        if (state.CurrentMoveId != null && moveStateMachine.States.TryGetValue(state.CurrentMoveId, out MonsterState? currentState))
-            moveStateMachine.ForceCurrentState(currentState);
-
-        if (state.NextMoveId != null && moveStateMachine.States.TryGetValue(state.NextMoveId, out MonsterState? nextState) && nextState is MoveState moveState)
-            monster.SetMoveImmediate(moveState, true);
     }
 
     private static bool RestoreCodecState(MonsterModel monster, CreatureTopologyState state, IReadOnlyDictionary<string, Creature> creaturesByKey, UndoCreatureTopologyRestoreContext context)
@@ -245,5 +238,6 @@ internal static class UndoCreatureTopologyCodecRegistry
             .FirstOrDefault(player => player?.NetId == ownerNetId);
     }
 }
+
 
 

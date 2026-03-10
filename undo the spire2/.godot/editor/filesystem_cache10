@@ -16,7 +16,7 @@ UndoStableRefs.cs::CSharpScript::605469220987223537::1773120171::0::1::::<><><>0
 UndoActionKind.cs::CSharpScript::3081244294506939033::1772853347::0::1::::<><><>0<>0<><>::
 UndoChoiceKind.cs::CSharpScript::8764583750640556327::1772887187::0::1::::<><><>0<>0<><>::
 UndoChoiceResultKey.cs::CSharpScript::8704265921516446984::1772878869::0::1::::<><><>0<>0<><>::
-UndoController.cs::CSharpScript::7852459018193979781::1773138222::0::1::::<><><>0<>0<><>::
+UndoController.cs::CSharpScript::7852459018193979781::1773141729::0::1::::<><><>0<>0<><>::
 UndoModSettings.cs::CSharpScript::2441258028148412409::1772940212::0::1::::<><><>0<>0<><>::
 UndoRestoreCapability.cs::CSharpScript::7395331184172015662::1773121889::0::1::::<><><>0<>0<><>::
 UndoSnapshot.cs::CSharpScript::8822026581971946971::1772879520::0::1::::<><><>0<>0<><>::
@@ -32,14 +32,15 @@ UndoCombatReplayPatch.cs::CSharpScript::7340318978314825237::1772880876::0::1:::
 UndoCombatUiPatch.cs::CSharpScript::8578679769323091126::1772877838::0::1::::<><><>0<>0<><>::
 UndoModdingScreenPatch.cs::CSharpScript::337170879652584167::1772940212::0::1::::<><><>0<>0<><>::
 UndoRunLifecyclePatch.cs::CSharpScript::2210374246251262310::1772853824::0::1::::<><><>0<>0<><>::
-::res://Restore/::1773138193
+::res://Restore/::1773141318
 UndoActionCodecs.cs::CSharpScript::3355260992869728096::1773123037::0::1::::<><><>0<>0<><>::
+UndoCreatureReconciliationCodecs.cs::CSharpScript::5246431976788403577::1773141318::0::1::::<><><>0<>0<><>::
 UndoCreatureStatusCodecs.cs::CSharpScript::3623473209387665197::1773139093::0::1::::<><><>0<>0<><>::
-UndoCreatureTopologyCodecs.cs::CSharpScript::6486296516938968943::1773128978::0::1::::<><><>0<>0<><>::
+UndoCreatureTopologyCodecs.cs::CSharpScript::6486296516938968943::1773141332::0::1::::<><><>0<>0<><>::
 UndoRuntimeCodecs.cs::CSharpScript::5501407159008098655::1773125476::0::1::::<><><>0<>0<><>::
 ::res://Scenarios/::1773129003
-AuditCoverageValidator.cs::CSharpScript::1551811512220411311::1773129275::0::1::::<><><>0<>0<><>::
-UndoScenarioExecutor.cs::CSharpScript::2327932911583881298::1773139510::0::1::::<><><>0<>0<><>::
+AuditCoverageValidator.cs::CSharpScript::1551811512220411311::1773142394::0::1::::<><><>0<>0<><>::
+UndoScenarioExecutor.cs::CSharpScript::2327932911583881298::1773141936::0::1::::<><><>0<>0<><>::
 UndoScenarioRunner.cs::CSharpScript::6516992960636145458::1773128978::0::1::::<><><>0<>0<><>::
 ::res://Snapshot/::1773139691
 UndoCardCostState.cs::CSharpScript::7578946570281519458::1772950823::0::1::::<><><>0<>0<><>::
@@ -49,7 +50,7 @@ UndoCombatReplayState.cs::CSharpScript::5973050901029664292::1772861636::0::1:::
 UndoCreatureStatusRuntimeState.cs::CSharpScript::3458871820340198399::1773137840::0::1::::<><><>0<>0<><>::
 UndoCreatureTopologyState.cs::CSharpScript::7407304560183144302::1773128978::0::1::::<><><>0<>0<><>::
 UndoKernelState.cs::CSharpScript::8028139263106226866::1773121889::0::1::::<><><>0<>0<><>::
-UndoMonsterState.cs::CSharpScript::6195696780495086906::1773137900::0::1::::<><><>0<>0<><>::
+UndoMonsterState.cs::CSharpScript::6195696780495086906::1773141276::0::1::::<><><>0<>0<><>::
 UndoRuntimeState.cs::CSharpScript::6253571262004055937::1773061892::0::1::::<><><>0<>0<><>::
 ::res://UI/::1773129285
 UndoHud.cs::CSharpScript::3323361495000453971::1772877610::0::1::::<><><>0<>0<><>::

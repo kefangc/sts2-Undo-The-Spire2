@@ -544,6 +544,7 @@ internal static class UndoScenarioExecutor
                 "pet_visual_state_restores" => AssertPaelsLegionVisualState(assertion),
                 "status_runtime_restores" => CompareProjection(assertion, ProjectCreatureStatusRuntime(targetState.CreatureStatusRuntimeStates), ProjectCreatureStatusRuntime(redoState.CreatureStatusRuntimeStates), "creature_status_runtime_roundtrip"),
                 "creature_visual_state_restores" => AssertCreatureStatusVisualState(assertion, scenario.Id),
+                "creature_intent_state_restores" => AssertCreatureIntentState(assertion, scenario.Id),
                 "turn_counter_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.RelicRuntimeStates, redoState.RuntimeGraphState.RelicRuntimeStates, "relic_runtime_roundtrip"),
                 "activation_flag_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.RelicRuntimeStates, redoState.RuntimeGraphState.RelicRuntimeStates, "relic_runtime_roundtrip"),
                 "last_turn_card_replay_restores" => CompareProjection(assertion, targetState.CombatHistoryState, redoState.CombatHistoryState, "combat_history_roundtrip"),
@@ -675,6 +676,71 @@ internal static class UndoScenarioExecutor
         };
     }
 
+    private static UndoScenarioAssertionResult AssertCreatureIntentState(string assertion, string scenarioId)
+    {
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        if (combatState == null)
+        {
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = false,
+                Detail = "combat_state_missing"
+            };
+        }
+
+        foreach (Creature creature in combatState.Creatures)
+        {
+            MonsterModel? monster = creature.Monster;
+            if (monster == null)
+                continue;
+
+            switch (scenarioId)
+            {
+                case "slumbering-beetle" when monster is SlumberingBeetle slumberingBeetle:
+                {
+                    string? nextMoveId = slumberingBeetle.NextMove?.Id;
+                    bool hasSlumberPower = creature.HasPower<SlumberPower>();
+                    bool passed = nextMoveId == MonsterModel.stunnedMoveId
+                        ? !slumberingBeetle.IntendsToAttack
+                        : hasSlumberPower
+                            ? nextMoveId == "SNORE_MOVE" && !slumberingBeetle.IntendsToAttack
+                            : slumberingBeetle.IsAwake
+                                ? nextMoveId == "ROLL_OUT_MOVE" && slumberingBeetle.IntendsToAttack
+                                : !slumberingBeetle.IntendsToAttack;
+                    return new UndoScenarioAssertionResult
+                    {
+                        Assertion = assertion,
+                        Passed = passed,
+                        Detail = $"next_move={nextMoveId ?? "null"}; awake={slumberingBeetle.IsAwake}; slumber={hasSlumberPower}; attacks={slumberingBeetle.IntendsToAttack}"
+                    };
+                }
+                case "lagavulin-matriarch" when monster is LagavulinMatriarch lagavulinMatriarch:
+                {
+                    string? nextMoveId = lagavulinMatriarch.NextMove?.Id;
+                    bool asleep = !lagavulinMatriarch.IsAwake || creature.HasPower<AsleepPower>();
+                    bool passed = nextMoveId == MonsterModel.stunnedMoveId
+                        ? !lagavulinMatriarch.IntendsToAttack
+                        : asleep
+                            ? nextMoveId == "SLEEP_MOVE" && !lagavulinMatriarch.IntendsToAttack
+                            : true;
+                    return new UndoScenarioAssertionResult
+                    {
+                        Assertion = assertion,
+                        Passed = passed,
+                        Detail = $"next_move={nextMoveId ?? "null"}; awake={lagavulinMatriarch.IsAwake}; asleep={asleep}; attacks={lagavulinMatriarch.IntendsToAttack}"
+                    };
+                }
+            }
+        }
+
+        return new UndoScenarioAssertionResult
+        {
+            Assertion = assertion,
+            Passed = false,
+            Detail = $"scenario_creature_missing:{scenarioId}"
+        };
+    }
     private static UndoScenarioAssertionResult BuildAnimationAssertion(string assertion, string? animation, IReadOnlyList<string> expectedAnimations, bool? actualSleepingVfx = null, bool? expectedSleepingVfx = null, bool? actualVisible = null, bool? expectedVisible = null)
     {
         bool passed = animation != null && expectedAnimations.Contains(animation, StringComparer.Ordinal);
@@ -783,6 +849,7 @@ internal static class UndoScenarioExecutor
         HashSet<string> implemented = UndoRuntimeStateCodecRegistry.GetImplementedCodecIds();
         implemented.UnionWith(UndoCreatureTopologyCodecRegistry.GetImplementedCodecIds());
         implemented.UnionWith(UndoCreatureStatusCodecRegistry.GetImplementedCodecIds());
+        implemented.UnionWith(UndoCreatureReconciliationCodecRegistry.GetImplementedCodecIds());
         implemented.UnionWith(UndoActionCodecRegistry.GetImplementedCodecIds());
 
         List<string> required = scenario.Id switch
@@ -794,14 +861,14 @@ internal static class UndoScenarioExecutor
             "decimillipede" => ["topology:Decimillipede"],
             "door-maker" => ["topology:DoorAndDoormaker", "power:DoorRevivalPower.isHalfDead"],
             "paels-legion" => ["relic:PaelsLegion.affectedCardPlay"],
-            "slumbering-beetle" => ["status:SlumberingBeetle.IsAwake"],
-            "lagavulin-matriarch" => ["status:LagavulinMatriarch.IsAwake"],
-            "bowlbug-rock" => ["status:BowlbugRock.IsOffBalance"],
-            "thieving-hopper" => ["status:ThievingHopper.IsHovering"],
-            "fat-gremlin" => ["status:FatGremlin.IsAwake"],
-            "sneaky-gremlin" => ["status:SneakyGremlin.IsAwake"],
-            "ceremonial-beast" => ["status:CeremonialBeast.IsStunnedByPlowRemoval", "status:CeremonialBeast.InMidCharge"],
-            "wriggler" => ["status:Wriggler.StartStunned"],
+            "slumbering-beetle" => ["status:SlumberingBeetle.IsAwake", "reconcile:SlumberingBeetle.MoveIntent"],
+            "lagavulin-matriarch" => ["status:LagavulinMatriarch.IsAwake", "reconcile:LagavulinMatriarch.MoveIntent"],
+            "bowlbug-rock" => ["status:BowlbugRock.IsOffBalance", "reconcile:GenericTransientStun"],
+            "thieving-hopper" => ["status:ThievingHopper.IsHovering", "reconcile:GenericTransientStun"],
+            "fat-gremlin" => ["status:FatGremlin.IsAwake", "reconcile:GenericTransientStun"],
+            "sneaky-gremlin" => ["status:SneakyGremlin.IsAwake", "reconcile:GenericTransientStun"],
+            "ceremonial-beast" => ["status:CeremonialBeast.IsStunnedByPlowRemoval", "status:CeremonialBeast.InMidCharge", "reconcile:CeremonialBeast.TransientStun"],
+            "wriggler" => ["status:Wriggler.StartStunned", "reconcile:Wriggler.StartStunned"],
             "throwing-axe" => [],
             "happy-flower" => [],
             "history-course" => ["history:CombatHistory.entries"],

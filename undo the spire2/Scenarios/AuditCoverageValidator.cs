@@ -45,10 +45,12 @@ internal static class AuditCoverageValidator
             options) ?? [];
         HashSet<string> implementedIds = UndoRuntimeStateCodecRegistry.GetImplementedCodecIds();
         implementedIds.UnionWith(UndoCreatureTopologyCodecRegistry.GetImplementedCodecIds());
+        implementedIds.UnionWith(UndoCreatureStatusCodecRegistry.GetImplementedCodecIds());
+        implementedIds.UnionWith(UndoCreatureReconciliationCodecRegistry.GetImplementedCodecIds());
         implementedIds.UnionWith(UndoActionCodecRegistry.GetImplementedCodecIds());
 
         List<string> missingOfficialPatterns = records
-            .Where(record => record.Category is "power" or "relic" or "card" or "topology" or "action")
+            .Where(record => record.Category is "power" or "relic" or "card" or "topology" or "action" or "status" or "reconciliation")
             .Where(record => record.Implemented && !implementedIds.Contains(record.Id))
             .Select(record => record.Id)
             .OrderBy(static id => id, StringComparer.Ordinal)
