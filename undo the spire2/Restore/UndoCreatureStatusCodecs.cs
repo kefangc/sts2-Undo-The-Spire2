@@ -107,7 +107,9 @@ internal static class UndoCreatureStatusCodecRegistry
         new CeremonialBeastStunnedCodec(),
         new CeremonialBeastInMidChargeCodec(),
         new WrigglerStartStunnedCodec(),
-        new ThievingHopperHoveringCodec()
+        new ThievingHopperHoveringCodec(),
+        new OwlMagistrateFlyingCodec(),
+        new QueenHasAmalgamDiedCodec()
     ];
 
     public static HashSet<string> GetImplementedCodecIds()
@@ -239,6 +241,20 @@ internal static class UndoCreatureStatusCodecRegistry
         public override string CodecId => "status:ThievingHopper.IsHovering";
 
         protected override string PropertyName => "IsHovering";
+    }
+
+    private sealed class OwlMagistrateFlyingCodec : UndoCreatureStatusBoolCodec<OwlMagistrate>
+    {
+        public override string CodecId => "status:OwlMagistrate.IsFlying";
+
+        protected override string PropertyName => "IsFlying";
+    }
+
+    private sealed class QueenHasAmalgamDiedCodec : UndoCreatureStatusBoolCodec<Queen>
+    {
+        public override string CodecId => "status:Queen.HasAmalgamDied";
+
+        protected override string PropertyName => "HasAmalgamDied";
     }
 }
 

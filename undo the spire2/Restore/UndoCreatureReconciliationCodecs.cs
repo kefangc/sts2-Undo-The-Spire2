@@ -27,6 +27,9 @@ internal static class UndoCreatureReconciliationCodecRegistry
     [
         new SlumberingBeetleReconciliationCodec(),
         new LagavulinMatriarchReconciliationCodec(),
+        new OwlMagistrateReconciliationCodec(),
+        new QueenReconciliationCodec(),
+        new TunnelerReconciliationCodec(),
         new CeremonialBeastReconciliationCodec(),
         new WrigglerReconciliationCodec(),
         new GenericTransientStunReconciliationCodec()
@@ -94,6 +97,52 @@ internal static class UndoCreatureReconciliationCodecRegistry
         return true;
     }
 
+    private static void TrySetBoolProperty(MonsterModel monster, string propertyName, bool value)
+    {
+        if (UndoReflectionUtil.TrySetPropertyValue(monster, propertyName, value))
+            return;
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        UndoReflectionUtil.TrySetFieldValue(monster, fieldName, value);
+    }
+
+    private static bool TryGetBoolProperty(MonsterModel monster, string propertyName, out bool value)
+    {
+        if (UndoReflectionUtil.FindProperty(monster.GetType(), propertyName)?.GetValue(monster) is bool propertyValue)
+        {
+            value = propertyValue;
+            return true;
+        }
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        if (UndoReflectionUtil.FindField(monster.GetType(), fieldName)?.GetValue(monster) is bool fieldValue)
+        {
+            value = fieldValue;
+            return true;
+        }
+
+        value = false;
+        return false;
+    }
+
+    private static TReference? TryGetReferenceProperty<TReference>(MonsterModel monster, string propertyName) where TReference : class
+    {
+        if (UndoReflectionUtil.FindProperty(monster.GetType(), propertyName)?.GetValue(monster) is TReference propertyValue)
+            return propertyValue;
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        return UndoReflectionUtil.FindField(monster.GetType(), fieldName)?.GetValue(monster) as TReference;
+    }
+
+    private static void TrySetReferenceProperty(MonsterModel monster, string propertyName, object? value)
+    {
+        if (UndoReflectionUtil.TrySetPropertyValue(monster, propertyName, value))
+            return;
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        UndoReflectionUtil.TrySetFieldValue(monster, fieldName, value);
+    }
+
     private sealed class SlumberingBeetleReconciliationCodec : IUndoCreatureReconciliationCodec
     {
         public string CodecId => "reconcile:SlumberingBeetle.MoveIntent";
@@ -111,6 +160,7 @@ internal static class UndoCreatureReconciliationCodecRegistry
 
             if (beetle.Creature.HasPower<SlumberPower>())
             {
+                TrySetBoolProperty(beetle, "IsAwake", false);
                 TrySetMove(beetle, "SNORE_MOVE");
                 return;
             }
@@ -122,7 +172,14 @@ internal static class UndoCreatureReconciliationCodecRegistry
             }
 
             if (beetle.NextMove?.Id == "SNORE_MOVE" || state?.NextMoveId == "ROLL_OUT_MOVE")
+            {
+                TrySetBoolProperty(beetle, "IsAwake", true);
                 TrySetMove(beetle, "ROLL_OUT_MOVE");
+                return;
+            }
+
+            if (beetle.IntendsToAttack || beetle.NextMove?.Id == "ROLL_OUT_MOVE")
+                TrySetBoolProperty(beetle, "IsAwake", true);
         }
     }
 
@@ -143,6 +200,7 @@ internal static class UndoCreatureReconciliationCodecRegistry
 
             if (lagavulin.Creature.HasPower<AsleepPower>())
             {
+                TrySetBoolProperty(lagavulin, "IsAwake", false);
                 TrySetMove(lagavulin, "SLEEP_MOVE");
                 return;
             }
@@ -154,7 +212,80 @@ internal static class UndoCreatureReconciliationCodecRegistry
             }
 
             if (lagavulin.NextMove?.Id == "SLEEP_MOVE")
+            {
+                TrySetBoolProperty(lagavulin, "IsAwake", true);
                 TrySetMove(lagavulin, "SLASH_MOVE");
+                return;
+            }
+
+            if (lagavulin.IntendsToAttack)
+                TrySetBoolProperty(lagavulin, "IsAwake", true);
+        }
+    }
+
+    private sealed class OwlMagistrateReconciliationCodec : IUndoCreatureReconciliationCodec
+    {
+        public string CodecId => "reconcile:OwlMagistrate.FlightState";
+
+        public bool CanHandle(MonsterModel monster)
+        {
+            return monster is OwlMagistrate;
+        }
+
+        public void Reconcile(MonsterModel monster, UndoMonsterState? state)
+        {
+            OwlMagistrate owl = (OwlMagistrate)monster;
+            string? targetMoveId = state?.NextMoveId ?? owl.NextMove?.Id;
+            bool hasSoar = owl.Creature.HasPower<SoarPower>();
+
+            if (!string.IsNullOrWhiteSpace(targetMoveId))
+                TrySetMove(owl, targetMoveId);
+
+            bool shouldBeFlying = hasSoar || string.Equals(targetMoveId, "VERDICT", StringComparison.Ordinal);
+            TrySetBoolProperty(owl, "IsFlying", shouldBeFlying);
+        }
+    }
+
+    private sealed class QueenReconciliationCodec : IUndoCreatureReconciliationCodec
+    {
+        private static readonly HashSet<string> EnragedPathMoveIds =
+        [
+            "OFF_WITH_YOUR_HEAD_MOVE",
+            "EXECUTION_MOVE",
+            "ENRAGE_MOVE"
+        ];
+
+        public string CodecId => "reconcile:Queen.AmalgamBranch";
+
+        public bool CanHandle(MonsterModel monster)
+        {
+            return monster is Queen;
+        }
+
+        public void Reconcile(MonsterModel monster, UndoMonsterState? state)
+        {
+            Queen queen = (Queen)monster;
+            Creature? amalgam = TryGetReferenceProperty<Creature>(queen, "Amalgam");
+            bool amalgamAlive = amalgam != null && !amalgam.IsDead;
+            string? targetMoveId = state?.NextMoveId ?? queen.NextMove?.Id;
+
+            if (amalgamAlive)
+            {
+                TrySetBoolProperty(queen, "HasAmalgamDied", false);
+                TrySetReferenceProperty(queen, "Amalgam", amalgam);
+                if (string.IsNullOrWhiteSpace(targetMoveId) || EnragedPathMoveIds.Contains(targetMoveId))
+                    targetMoveId = "BURN_BRIGHT_FOR_ME_MOVE";
+            }
+            else
+            {
+                TrySetBoolProperty(queen, "HasAmalgamDied", true);
+                TrySetReferenceProperty(queen, "Amalgam", null);
+                if (string.IsNullOrWhiteSpace(targetMoveId) || string.Equals(targetMoveId, "BURN_BRIGHT_FOR_ME_MOVE", StringComparison.Ordinal))
+                    targetMoveId = "ENRAGE_MOVE";
+            }
+
+            if (!string.IsNullOrWhiteSpace(targetMoveId))
+                TrySetMove(queen, targetMoveId);
         }
     }
 
@@ -171,6 +302,74 @@ internal static class UndoCreatureReconciliationCodecRegistry
         {
             CeremonialBeast beast = (CeremonialBeast)monster;
             TryRestoreTransientStunnedMove(beast, state, beast.StunnedMove, beast.BeastCryState?.StateId);
+        }
+    }
+
+    private sealed class TunnelerReconciliationCodec : IUndoCreatureReconciliationCodec
+    {
+        private const string BiteMoveId = "BITE_MOVE";
+        private const string BurrowMoveId = "BURROW_MOVE";
+        private const string BelowMoveId = "BELOW_MOVE_1";
+        private const string DizzyMoveId = "DIZZY_MOVE";
+
+        public string CodecId => "reconcile:Tunneler.BurrowIntent";
+
+        public bool CanHandle(MonsterModel monster)
+        {
+            return monster is Tunneler;
+        }
+
+        public void Reconcile(MonsterModel monster, UndoMonsterState? state)
+        {
+            Tunneler tunneler = (Tunneler)monster;
+            if (TryRestoreTransientStunnedMove(tunneler, state, static _ => Task.CompletedTask, BiteMoveId))
+            {
+                RemovePowers<BurrowedPower>(tunneler.Creature);
+                return;
+            }
+
+            string? targetMoveId = state?.NextMoveId ?? tunneler.NextMove?.Id;
+            bool burrowed = tunneler.Creature.HasPower<BurrowedPower>();
+
+            if (burrowed)
+            {
+                if (string.Equals(targetMoveId, BurrowMoveId, StringComparison.Ordinal) ||
+                    string.Equals(targetMoveId, BelowMoveId, StringComparison.Ordinal))
+                {
+                    TrySetMove(tunneler, targetMoveId);
+                    return;
+                }
+
+                if (string.Equals(targetMoveId, BiteMoveId, StringComparison.Ordinal) ||
+                    string.Equals(targetMoveId, DizzyMoveId, StringComparison.Ordinal))
+                {
+                    RemovePowers<BurrowedPower>(tunneler.Creature);
+                    TrySetMove(tunneler, targetMoveId);
+                    return;
+                }
+
+                if (string.Equals(state?.CurrentStateId, BelowMoveId, StringComparison.Ordinal))
+                {
+                    TrySetMove(tunneler, BelowMoveId);
+                    return;
+                }
+            }
+            else
+            {
+                if (string.Equals(targetMoveId, BelowMoveId, StringComparison.Ordinal) ||
+                    string.Equals(state?.CurrentStateId, BelowMoveId, StringComparison.Ordinal))
+                {
+                    TrySetMove(tunneler, BiteMoveId);
+                    return;
+                }
+
+                if (string.Equals(targetMoveId, BurrowMoveId, StringComparison.Ordinal) ||
+                    string.Equals(targetMoveId, BiteMoveId, StringComparison.Ordinal) ||
+                    string.Equals(targetMoveId, DizzyMoveId, StringComparison.Ordinal))
+                {
+                    TrySetMove(tunneler, targetMoveId);
+                }
+            }
         }
     }
 
@@ -204,5 +403,12 @@ internal static class UndoCreatureReconciliationCodecRegistry
         {
             TryRestoreTransientStunnedMove(monster, state);
         }
+    }
+
+    private static void RemovePowers<TPower>(Creature creature)
+        where TPower : PowerModel
+    {
+        foreach (TPower power in creature.Powers.OfType<TPower>().ToList())
+            power.RemoveInternal();
     }
 }

@@ -219,7 +219,8 @@ internal static class UndoRuntimeStateCodecRegistry
         new AfterimagePlayedCardsPowerCodec(),
         new NightmareSelectedCardPowerCodec(),
         new DampenPowerCodec(),
-        new DoorRevivalHalfDeadPowerCodec()
+        new DoorRevivalHalfDeadPowerCodec(),
+        new ChainsOfBindingBoundCardPlayedPowerCodec()
     ];
 
     private static readonly IReadOnlyList<IUndoRelicRuntimeCodec> RelicCodecs =
@@ -583,6 +584,38 @@ internal static class UndoRuntimeStateCodecRegistry
                 return;
 
             UndoReflectionUtil.TrySetFieldValue(internalData, "isHalfDead", state.Value);
+        }
+    }
+
+    private sealed class ChainsOfBindingBoundCardPlayedPowerCodec : UndoPowerRuntimeCodec<UndoBoolRuntimeComplexState>
+    {
+        public override string CodecId => "power:ChainsOfBindingPower.boundCardPlayed";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is ChainsOfBindingPower;
+        }
+
+        public override UndoBoolRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            object? internalData = GetPowerInternalData(power);
+            if (internalData == null)
+                return null;
+
+            return new UndoBoolRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Value = UndoReflectionUtil.FindField(internalData.GetType(), "boundCardPlayed")?.GetValue(internalData) is bool value && value
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoBoolRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            object? internalData = GetPowerInternalData(power);
+            if (internalData == null)
+                return;
+
+            UndoReflectionUtil.TrySetFieldValue(internalData, "boundCardPlayed", state.Value);
         }
     }
 

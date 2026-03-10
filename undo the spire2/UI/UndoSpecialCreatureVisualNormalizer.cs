@@ -4,6 +4,7 @@ using System.Linq;
 using Godot;
 using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
@@ -88,6 +89,12 @@ internal static class UndoSpecialCreatureVisualNormalizer
             case LagavulinMatriarch lagavulinMatriarch:
                 NormalizeLagavulin(lagavulinMatriarch, creatureNode);
                 break;
+            case Tunneler tunneler:
+                NormalizeTunneler(tunneler, creatureNode);
+                break;
+            case OwlMagistrate owlMagistrate:
+                NormalizeOwlMagistrate(owlMagistrate, creatureNode);
+                break;
             case BowlbugRock bowlbugRock:
                 NormalizeBowlbugRock(bowlbugRock, creatureNode);
                 break;
@@ -108,21 +115,32 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void NormalizeSleepingBeetle(SlumberingBeetle monster, NCreature creatureNode)
     {
-        if (!monster.IsAwake)
+        SlumberingBeetleVisualState visualState = GetSlumberingBeetleVisualState(monster);
+        if (visualState == SlumberingBeetleVisualState.Sleeping)
         {
             EnsureSleepingVfx(monster, creatureNode);
+            EnsureSleepLoopSfx("event:/sfx/enemy/enemy_attacks/slumbering_beetle/slumbering_beetle_sleep_loop");
             EnsureBaseAnimation(creatureNode, "sleep_loop", loop: true);
             return;
         }
 
         ClearSleepingVfx(monster);
-        EnsureIdleState(creatureNode);
+        StopLoopSfx("event:/sfx/enemy/enemy_attacks/slumbering_beetle/slumbering_beetle_sleep_loop");
+        if (visualState == SlumberingBeetleVisualState.WakeStun)
+        {
+            creatureNode.SetAnimationTrigger("WakeUp");
+            EnsureBaseAnimation(creatureNode, "wake_up", loop: false);
+            return;
+        }
+
+        creatureNode.SetAnimationTrigger("WakeUp");
+        EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
     }
 
     private static void NormalizeLagavulin(LagavulinMatriarch monster, NCreature creatureNode)
     {
-        bool asleep = !monster.IsAwake || monster.Creature.HasPower<AsleepPower>();
-        if (asleep)
+        LagavulinVisualState visualState = GetLagavulinVisualState(monster);
+        if (visualState == LagavulinVisualState.Sleeping)
         {
             EnsureSleepingVfx(monster, creatureNode);
             creatureNode.SetAnimationTrigger("Sleep");
@@ -137,6 +155,113 @@ internal static class UndoSpecialCreatureVisualNormalizer
             SetLagavulinEyes(creatureNode, "_tracks/eyes_open", addLoop: true);
         else
             SetLagavulinEyes(creatureNode, "_tracks/eyes_closed_loop", addLoop: false);
+    }
+
+    private static void NormalizeTunneler(Tunneler monster, NCreature creatureNode)
+    {
+        TunnelerVisualState visualState = GetTunnelerVisualState(monster);
+        ResetSpecialNodePosition(creatureNode.GetSpecialNode<Node2D>("Visuals/SpineBoneNode"));
+        switch (visualState)
+        {
+            case TunnelerVisualState.Burrowed:
+                EnsureBaseAnimation(creatureNode, "hidden_loop", loop: true);
+                return;
+            case TunnelerVisualState.Stunned:
+                EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
+                return;
+            default:
+                EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
+                return;
+        }
+    }
+
+    private static void NormalizeOwlMagistrate(OwlMagistrate monster, NCreature creatureNode)
+    {
+        OwlMagistrateVisualState visualState = GetOwlMagistrateVisualState(monster);
+        if (visualState == OwlMagistrateVisualState.Flying)
+        {
+            SfxCmd.PlayLoop("event:/sfx/enemy/enemy_attacks/owl_magistrate/owl_magistrate_fly_loop", true);
+            creatureNode.SetAnimationTrigger("TakeOff");
+            EnsureBaseAnimation(creatureNode, "fly_loop", loop: true);
+            return;
+        }
+
+        StopLoopSfx("event:/sfx/enemy/enemy_attacks/owl_magistrate/owl_magistrate_fly_loop");
+        EnsureIdleState(creatureNode);
+    }
+
+    internal enum SlumberingBeetleVisualState
+    {
+        Sleeping,
+        WakeStun,
+        Awake
+    }
+
+    internal enum LagavulinVisualState
+    {
+        Sleeping,
+        WakeStun,
+        Awake
+    }
+
+    internal enum TunnelerVisualState
+    {
+        Burrowed,
+        Stunned,
+        Surfaced
+    }
+
+    internal enum OwlMagistrateVisualState
+    {
+        Grounded,
+        Flying
+    }
+
+    internal static SlumberingBeetleVisualState GetSlumberingBeetleVisualState(SlumberingBeetle monster)
+    {
+        bool hasSlumberPower = monster.Creature.HasPower<SlumberPower>();
+        string? nextMoveId = monster.NextMove?.Id;
+        if (hasSlumberPower && nextMoveId != MonsterModel.stunnedMoveId && !monster.IntendsToAttack)
+            return SlumberingBeetleVisualState.Sleeping;
+
+        if (nextMoveId == MonsterModel.stunnedMoveId)
+            return SlumberingBeetleVisualState.WakeStun;
+
+        return SlumberingBeetleVisualState.Awake;
+    }
+
+    internal static LagavulinVisualState GetLagavulinVisualState(LagavulinMatriarch monster)
+    {
+        string? nextMoveId = monster.NextMove?.Id;
+        if (monster.Creature.HasPower<AsleepPower>() && nextMoveId != MonsterModel.stunnedMoveId && !monster.IntendsToAttack)
+            return LagavulinVisualState.Sleeping;
+
+        if (nextMoveId == MonsterModel.stunnedMoveId)
+            return LagavulinVisualState.WakeStun;
+
+        return LagavulinVisualState.Awake;
+    }
+
+    internal static TunnelerVisualState GetTunnelerVisualState(Tunneler monster)
+    {
+        string? nextMoveId = monster.NextMove?.Id;
+        if (nextMoveId == MonsterModel.stunnedMoveId || string.Equals(nextMoveId, "DIZZY_MOVE", StringComparison.Ordinal))
+            return TunnelerVisualState.Stunned;
+
+        if (monster.Creature.HasPower<BurrowedPower>())
+            return TunnelerVisualState.Burrowed;
+
+        return TunnelerVisualState.Surfaced;
+    }
+
+    internal static OwlMagistrateVisualState GetOwlMagistrateVisualState(OwlMagistrate monster)
+    {
+        bool hasSoarPower = monster.Creature.HasPower<SoarPower>();
+        bool isFlying = ReadBoolMonsterProperty(monster, "IsFlying");
+        string? nextMoveId = monster.NextMove?.Id;
+        return hasSoarPower || isFlying || string.Equals(nextMoveId, "VERDICT", StringComparison.Ordinal)
+            ? OwlMagistrateVisualState.Flying
+            : OwlMagistrateVisualState.Grounded;
     }
 
     private static void NormalizeBowlbugRock(BowlbugRock monster, NCreature creatureNode)
@@ -259,6 +384,14 @@ internal static class UndoSpecialCreatureVisualNormalizer
         creatureNode.SpineController.GetAnimationState().SetAnimation(animationName, loop, 0);
     }
 
+    private static void ResetSpecialNodePosition(Node2D? specialNode)
+    {
+        if (specialNode == null)
+            return;
+
+        specialNode.Position = Vector2.Zero;
+    }
+
     private static void EnsureSleepingVfx(object monster, NCreature creatureNode)
     {
         if (GetSleepingVfx(monster) != null)
@@ -287,6 +420,15 @@ internal static class UndoSpecialCreatureVisualNormalizer
             UndoReflectionUtil.TrySetFieldValue(monster, "_sleepingVfx", null);
     }
 
+    private static void EnsureSleepLoopSfx(string eventName)
+    {
+        SfxCmd.PlayLoop(eventName, true);
+    }
+
+    private static void StopLoopSfx(string eventName)
+    {
+        SfxCmd.StopLoop(eventName);
+    }
     private static NSleepingVfx? GetSleepingVfx(object monster)
     {
         return UndoReflectionUtil.FindProperty(monster.GetType(), "SleepingVfx")?.GetValue(monster) as NSleepingVfx
@@ -334,7 +476,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static bool ShouldWarmCreatureVisualScene(Creature creature)
     {
-        return creature.Monster is PaelsLegionMonster or SlumberingBeetle or LagavulinMatriarch;
+        return creature.Monster is PaelsLegionMonster or SlumberingBeetle or LagavulinMatriarch or Tunneler or OwlMagistrate;
     }
 
     // Warm the creature visuals scene explicitly so restore does not depend on it

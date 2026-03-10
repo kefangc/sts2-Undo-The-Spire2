@@ -104,6 +104,10 @@ $knownCases = @(
     [pscustomobject]@{ id='decimillipede'; title='Decimillipede'; category='monster'; sourceFiles=@('DecimillipedeSegment.cs','ReattachPower.cs'); primaryRisk='revive topology'; scenarioTags=@('monster','revive','topology'); assertions=@('reviving_state_restores','segment_rejoins_correctly') },
     [pscustomobject]@{ id='door-maker'; title='Doormaker'; category='monster'; sourceFiles=@('Door.cs','Doormaker.cs','DoorRevivalPower.cs'); primaryRisk='cross-creature topology'; scenarioTags=@('monster','boss','topology'); assertions=@('door_phase_restores','times_got_back_in_restores') },
     [pscustomobject]@{ id='paels-legion'; title='Pael''s Legion'; category='relic'; sourceFiles=@('PaelsLegion.cs'); primaryRisk='pet ownership topology'; scenarioTags=@('relic','pet','topology'); assertions=@('pet_role_restores','pet_owner_restores','no_duplicate_pet_after_undo','pet_visual_state_restores') },
+    [pscustomobject]@{ id='tunneler'; title='Tunneler'; category='monster'; sourceFiles=@('Tunneler.cs','BurrowedPower.cs'); primaryRisk='burrow/stun reconciliation and visuals'; scenarioTags=@('monster','burrow','stun'); assertions=@('burrow_visual_restores','stun_intent_restores') },
+    [pscustomobject]@{ id='owl-magistrate-flight'; title='Owl Magistrate'; category='monster'; sourceFiles=@('OwlMagistrate.cs','SoarPower.cs'); primaryRisk='flight state reconciliation and visuals'; scenarioTags=@('monster','flight','visual'); assertions=@('flight_visual_restores','flight_intent_restores') },
+    [pscustomobject]@{ id='queen-soulbound'; title='Queen Soulbound'; category='power'; sourceFiles=@('Queen.cs','ChainsOfBindingPower.cs'); primaryRisk='bound-card turn flag runtime'; scenarioTags=@('monster','power','turn-state'); assertions=@('bound_card_play_flag_restores') },
+    [pscustomobject]@{ id='queen-amalgam-branch'; title='Queen Amalgam Branch'; category='monster'; sourceFiles=@('Queen.cs','TorchHeadAmalgam.cs'); primaryRisk='linked minion death branch reconciliation'; scenarioTags=@('monster','linked-ref','branch'); assertions=@('queen_branch_intent_restores') },
     [pscustomobject]@{ id='slumbering-beetle'; title='Slumbering Beetle'; category='monster'; sourceFiles=@('SlumberingBeetle.cs','SlumberPower.cs'); primaryRisk='sleeping runtime state'; scenarioTags=@('monster','sleep','stun'); assertions=@('status_runtime_restores','creature_visual_state_restores','creature_intent_state_restores') },
     [pscustomobject]@{ id='lagavulin-matriarch'; title='Lagavulin Matriarch'; category='monster'; sourceFiles=@('LagavulinMatriarch.cs','AsleepPower.cs'); primaryRisk='sleeping runtime state'; scenarioTags=@('monster','sleep','wake'); assertions=@('status_runtime_restores','creature_visual_state_restores','creature_intent_state_restores') },
     [pscustomobject]@{ id='thieving-hopper'; title='Thieving Hopper'; category='monster'; sourceFiles=@('ThievingHopper.cs'); primaryRisk='hover and stun runtime'; scenarioTags=@('monster','hover','stun'); assertions=@('status_runtime_restores','creature_visual_state_restores') },
@@ -147,10 +151,16 @@ $officialRuntimePatterns = @(
     [pscustomobject]@{ id='relic:Pocketwatch.turnCounts'; category='relic'; sourceFile='Pocketwatch.cs'; stateShape='int + int'; implemented=($implementedCodecIds -contains 'relic:Pocketwatch.turnCounts') },
     [pscustomobject]@{ id='relic:VelvetChoker.cardsPlayedThisTurn'; category='relic'; sourceFile='VelvetChoker.cs'; stateShape='int'; implemented=($implementedCodecIds -contains 'relic:VelvetChoker.cardsPlayedThisTurn') },
     [pscustomobject]@{ id='relic:PaelsLegion.affectedCardPlay'; category='relic'; sourceFile='PaelsLegion.cs'; stateShape='CardPlay ref'; implemented=($implementedCodecIds -contains 'relic:PaelsLegion.affectedCardPlay') },
+    [pscustomobject]@{ id='power:ChainsOfBindingPower.boundCardPlayed'; category='power'; sourceFile='ChainsOfBindingPower.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'power:ChainsOfBindingPower.boundCardPlayed') },
+    [pscustomobject]@{ id='reconcile:Tunneler.BurrowIntent'; category='reconciliation'; sourceFile='Tunneler.cs'; stateShape='burrowed power + transient stun reconciliation'; implemented=($implementedCodecIds -contains 'reconcile:Tunneler.BurrowIntent') },
+    [pscustomobject]@{ id='reconcile:OwlMagistrate.FlightState'; category='reconciliation'; sourceFile='OwlMagistrate.cs'; stateShape='flight state reconciliation'; implemented=($implementedCodecIds -contains 'reconcile:OwlMagistrate.FlightState') },
+    [pscustomobject]@{ id='reconcile:Queen.AmalgamBranch'; category='reconciliation'; sourceFile='Queen.cs'; stateShape='linked-creature branch reconciliation'; implemented=($implementedCodecIds -contains 'reconcile:Queen.AmalgamBranch') },
     [pscustomobject]@{ id='status:SlumberingBeetle.IsAwake'; category='status'; sourceFile='SlumberingBeetle.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:SlumberingBeetle.IsAwake') },
     [pscustomobject]@{ id='status:LagavulinMatriarch.IsAwake'; category='status'; sourceFile='LagavulinMatriarch.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:LagavulinMatriarch.IsAwake') },
     [pscustomobject]@{ id='status:BowlbugRock.IsOffBalance'; category='status'; sourceFile='BowlbugRock.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:BowlbugRock.IsOffBalance') },
     [pscustomobject]@{ id='status:ThievingHopper.IsHovering'; category='status'; sourceFile='ThievingHopper.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:ThievingHopper.IsHovering') },
+    [pscustomobject]@{ id='status:OwlMagistrate.IsFlying'; category='status'; sourceFile='OwlMagistrate.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:OwlMagistrate.IsFlying') },
+    [pscustomobject]@{ id='status:Queen.HasAmalgamDied'; category='status'; sourceFile='Queen.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:Queen.HasAmalgamDied') },
     [pscustomobject]@{ id='status:FatGremlin.IsAwake'; category='status'; sourceFile='FatGremlin.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:FatGremlin.IsAwake') },
     [pscustomobject]@{ id='status:SneakyGremlin.IsAwake'; category='status'; sourceFile='SneakyGremlin.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:SneakyGremlin.IsAwake') },
     [pscustomobject]@{ id='status:CeremonialBeast.IsStunnedByPlowRemoval'; category='status'; sourceFile='CeremonialBeast.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:CeremonialBeast.IsStunnedByPlowRemoval') },
@@ -165,6 +175,7 @@ $officialRuntimePatterns = @(
     [pscustomobject]@{ id='topology:Decimillipede'; category='topology'; sourceFile='DecimillipedeSegment.cs'; stateShape='segment graph + starter move'; implemented=$true },
     [pscustomobject]@{ id='topology:TestSubject'; category='topology'; sourceFile='TestSubject.cs'; stateShape='phase state'; implemented=$true },
     [pscustomobject]@{ id='topology:InfestedPrism'; category='topology'; sourceFile='InfestedPrism.cs'; stateShape='monster topology marker'; implemented=$true },
+    [pscustomobject]@{ id='topology:QueenAmalgam'; category='topology'; sourceFile='Queen.cs'; stateShape='linked amalgam creature ref'; implemented=$true },
     [pscustomobject]@{ id='action:WellLaidPlans.choice'; category='action'; sourceFile='WellLaidPlansPower.cs'; stateShape='paused player choice'; implemented=(($implementedCodecIds -contains 'action:WellLaidPlans.choice') -or ($implementedCodecIds -contains 'action:from-hand')) },
     [pscustomobject]@{ id='history:CombatHistory.entries'; category='history'; sourceFile='CombatHistory.cs'; stateShape='17 official entry types'; implemented=$true }
 )
@@ -182,7 +193,13 @@ $codecRegistrySeed = [pscustomobject]@{
         'reconcile:LagavulinMatriarch.MoveIntent',
         'reconcile:GenericTransientStun',
         'reconcile:CeremonialBeast.TransientStun',
-        'reconcile:Wriggler.StartStunned'
+        'reconcile:Wriggler.StartStunned',
+        'reconcile:Tunneler.BurrowIntent',
+        'status:OwlMagistrate.IsFlying',
+        'status:Queen.HasAmalgamDied',
+        'power:ChainsOfBindingPower.boundCardPlayed',
+        'reconcile:OwlMagistrate.FlightState',
+        'reconcile:Queen.AmalgamBranch'
     )
 }
 $codecRegistrySeed | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $artifactsDir 'codec-registry-seed.json')
@@ -317,6 +334,10 @@ function Get-ScenarioDeclaredSupport([string]$ScenarioId) {
         'decimillipede' { return $officialRuntimePatterns.Where({ $_.id -eq 'topology:Decimillipede' }).implemented -contains $true }
         'door-maker' { return $officialRuntimePatterns.Where({ $_.id -eq 'topology:DoorAndDoormaker' }).implemented -contains $true }
         'paels-legion' { return $officialRuntimePatterns.Where({ $_.id -eq 'relic:PaelsLegion.affectedCardPlay' }).implemented -contains $true }
+        'tunneler' { return $officialRuntimePatterns.Where({ $_.id -eq 'reconcile:Tunneler.BurrowIntent' }).implemented -contains $true }
+        'owl-magistrate-flight' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:OwlMagistrate.IsFlying' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:OwlMagistrate.FlightState' }).implemented -contains $true) }
+        'queen-soulbound' { return $officialRuntimePatterns.Where({ $_.id -eq 'power:ChainsOfBindingPower.boundCardPlayed' }).implemented -contains $true }
+        'queen-amalgam-branch' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:Queen.HasAmalgamDied' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'topology:QueenAmalgam' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:Queen.AmalgamBranch' }).implemented -contains $true) }
         'slumbering-beetle' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:SlumberingBeetle.IsAwake' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:SlumberingBeetle.MoveIntent' }).implemented -contains $true) }
         'lagavulin-matriarch' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:LagavulinMatriarch.IsAwake' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:LagavulinMatriarch.MoveIntent' }).implemented -contains $true) }
         'bowlbug-rock' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:BowlbugRock.IsOffBalance' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:GenericTransientStun' }).implemented -contains $true) }
@@ -349,6 +370,10 @@ $unsupportedCapabilityIds = @($officialRuntimePatterns | Where-Object { -not $_.
 $runtimePendingIds = @(
     'well-laid-plans:runtime_closed_loop_pending',
     'paels-legion:runtime_closed_loop_pending',
+    'tunneler:runtime_closed_loop_pending',
+    'owl-magistrate-flight:runtime_closed_loop_pending',
+    'queen-soulbound:runtime_closed_loop_pending',
+    'queen-amalgam-branch:runtime_closed_loop_pending',
     'slumbering-beetle:runtime_closed_loop_pending',
     'lagavulin-matriarch:runtime_closed_loop_pending',
     'bowlbug-rock:runtime_closed_loop_pending',

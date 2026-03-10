@@ -74,6 +74,11 @@ internal sealed class UndoTestSubjectTopologyRuntimeState : UndoCreatureTopology
     public bool IsReviving { get; init; }
 }
 
+internal sealed class UndoQueenTopologyRuntimeState : UndoCreatureTopologyRuntimeState
+{
+    public CreatureRef? AmalgamRef { get; init; }
+}
+
 internal sealed class UndoCreatureTopologyCaptureContext
 {
     public required IReadOnlyList<Creature> Creatures { get; init; }

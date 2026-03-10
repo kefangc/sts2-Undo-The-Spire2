@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
+using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -90,6 +91,10 @@ internal static class UndoScenarioExecutor
             ["decimillipede"] = ExecuteRoundtripScenarioAsync,
             ["door-maker"] = ExecuteRoundtripScenarioAsync,
             ["paels-legion"] = ExecuteRoundtripScenarioAsync,
+            ["tunneler"] = ExecuteRoundtripScenarioAsync,
+            ["owl-magistrate-flight"] = ExecuteRoundtripScenarioAsync,
+            ["queen-soulbound"] = ExecuteRoundtripScenarioAsync,
+            ["queen-amalgam-branch"] = ExecuteRoundtripScenarioAsync,
             ["slumbering-beetle"] = ExecuteRoundtripScenarioAsync,
             ["lagavulin-matriarch"] = ExecuteRoundtripScenarioAsync,
             ["bowlbug-rock"] = ExecuteRoundtripScenarioAsync,
@@ -407,6 +412,10 @@ internal static class UndoScenarioExecutor
             "decimillipede" => Require(AnyMonsterType(combatState, "DecimillipedeSegment"), "decimillipede_required"),
             "door-maker" => Require(AnyMonsterType(combatState, "Door") || AnyMonsterType(combatState, "Doormaker"), "door_or_doormaker_required"),
             "paels-legion" => Require(me != null && PlayerHasRelic(me, "PaelsLegion") && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "PaelsLegion")), "paels_legion_pet_required"),
+            "tunneler" => Require(AnyMonsterType(combatState, "Tunneler"), "tunneler_required"),
+            "owl-magistrate-flight" => Require(AnyMonsterType(combatState, "OwlMagistrate"), "owl_magistrate_required"),
+            "queen-soulbound" => Require(me != null && AnyMonsterType(combatState, "Queen") && CreatureHasPower(me.Creature, "ChainsOfBindingPower"), "queen_soulbound_required"),
+            "queen-amalgam-branch" => Require(AnyMonsterType(combatState, "Queen") && AnyMonsterType(combatState, "TorchHeadAmalgam"), "queen_and_amalgam_required"),
             "slumbering-beetle" => Require(AnyMonsterType(combatState, "SlumberingBeetle"), "slumbering_beetle_required"),
             "lagavulin-matriarch" => Require(AnyMonsterType(combatState, "LagavulinMatriarch"), "lagavulin_matriarch_required"),
             "bowlbug-rock" => Require(AnyMonsterType(combatState, "BowlbugRock"), "bowlbug_rock_required"),
@@ -545,6 +554,12 @@ internal static class UndoScenarioExecutor
                 "status_runtime_restores" => CompareProjection(assertion, ProjectCreatureStatusRuntime(targetState.CreatureStatusRuntimeStates), ProjectCreatureStatusRuntime(redoState.CreatureStatusRuntimeStates), "creature_status_runtime_roundtrip"),
                 "creature_visual_state_restores" => AssertCreatureStatusVisualState(assertion, scenario.Id),
                 "creature_intent_state_restores" => AssertCreatureIntentState(assertion, scenario.Id),
+                "burrow_visual_restores" => AssertCreatureStatusVisualState(assertion, scenario.Id),
+                "stun_intent_restores" => AssertCreatureIntentState(assertion, scenario.Id),
+                "flight_visual_restores" => AssertCreatureStatusVisualState(assertion, scenario.Id),
+                "flight_intent_restores" => AssertCreatureIntentState(assertion, scenario.Id),
+                "bound_card_play_flag_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.PowerRuntimeStates, redoState.RuntimeGraphState.PowerRuntimeStates, "power_runtime_roundtrip"),
+                "queen_branch_intent_restores" => AssertCreatureIntentState(assertion, scenario.Id),
                 "turn_counter_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.RelicRuntimeStates, redoState.RuntimeGraphState.RelicRuntimeStates, "relic_runtime_roundtrip"),
                 "activation_flag_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.RelicRuntimeStates, redoState.RuntimeGraphState.RelicRuntimeStates, "relic_runtime_roundtrip"),
                 "last_turn_card_replay_restores" => CompareProjection(assertion, targetState.CombatHistoryState, redoState.CombatHistoryState, "combat_history_roundtrip"),
@@ -651,10 +666,57 @@ internal static class UndoScenarioExecutor
             switch (scenarioId)
             {
                 case "slumbering-beetle" when creature.Monster is SlumberingBeetle slumberingBeetle:
-                    return BuildAnimationAssertion(assertion, animation, !slumberingBeetle.IsAwake ? ["sleep_loop"] : ["idle_loop"], hasSleepingVfx, !slumberingBeetle.IsAwake, nodeVisible, true);
+                {
+                    UndoSpecialCreatureVisualNormalizer.SlumberingBeetleVisualState visualState = UndoSpecialCreatureVisualNormalizer.GetSlumberingBeetleVisualState(slumberingBeetle);
+                    IReadOnlyList<string> expectedAnimations = visualState switch
+                    {
+                        UndoSpecialCreatureVisualNormalizer.SlumberingBeetleVisualState.Sleeping => ["sleep_loop"],
+                        UndoSpecialCreatureVisualNormalizer.SlumberingBeetleVisualState.WakeStun => ["wake_up"],
+                        _ => ["idle_loop"]
+                    };
+                    bool expectedSleepingVfx = visualState == UndoSpecialCreatureVisualNormalizer.SlumberingBeetleVisualState.Sleeping;
+                    return BuildAnimationAssertion(assertion, animation, expectedAnimations, hasSleepingVfx, expectedSleepingVfx, nodeVisible, true);
+                }
                 case "lagavulin-matriarch" when creature.Monster is LagavulinMatriarch lagavulinMatriarch:
-                    bool asleep = !lagavulinMatriarch.IsAwake || creature.HasPower<AsleepPower>();
-                    return BuildAnimationAssertion(assertion, animation, asleep ? ["sleep_loop"] : ["idle_loop"], hasSleepingVfx, asleep, nodeVisible, true);
+                {
+                    UndoSpecialCreatureVisualNormalizer.LagavulinVisualState visualState = UndoSpecialCreatureVisualNormalizer.GetLagavulinVisualState(lagavulinMatriarch);
+                    IReadOnlyList<string> expectedAnimations = visualState == UndoSpecialCreatureVisualNormalizer.LagavulinVisualState.Sleeping ? ["sleep_loop"] : ["idle_loop"];
+                    bool expectedSleepingVfx = visualState == UndoSpecialCreatureVisualNormalizer.LagavulinVisualState.Sleeping;
+                    return BuildAnimationAssertion(assertion, animation, expectedAnimations, hasSleepingVfx, expectedSleepingVfx, nodeVisible, true);
+                }
+                case "tunneler" when creature.Monster is Tunneler tunneler:
+                {
+                    UndoSpecialCreatureVisualNormalizer.TunnelerVisualState visualState = UndoSpecialCreatureVisualNormalizer.GetTunnelerVisualState(tunneler);
+                    IReadOnlyList<string> expectedAnimations = visualState == UndoSpecialCreatureVisualNormalizer.TunnelerVisualState.Burrowed ? ["hidden_loop"] : ["idle_loop"];
+                    Node2D? specialNode = creatureNode.GetSpecialNode<Node2D>("Visuals/SpineBoneNode");
+                    bool nodeReset = specialNode == null || specialNode.Position.IsEqualApprox(Vector2.Zero);
+                    UndoScenarioAssertionResult result = BuildAnimationAssertion(assertion, animation, expectedAnimations, actualVisible: nodeVisible, expectedVisible: true);
+                    if (!nodeReset)
+                    {
+                        result = new UndoScenarioAssertionResult
+                        {
+                            Assertion = assertion,
+                            Passed = false,
+                            Detail = $"{result.Detail}; spine_bone_pos={specialNode!.Position}"
+                        };
+                    }
+                    else if (!string.IsNullOrWhiteSpace(result.Detail))
+                    {
+                        result = new UndoScenarioAssertionResult
+                        {
+                            Assertion = result.Assertion,
+                            Passed = result.Passed,
+                            Detail = $"{result.Detail}; spine_bone_pos=Zero"
+                        };
+                    }
+                    return result;
+                }
+                case "owl-magistrate-flight" when creature.Monster is OwlMagistrate owlMagistrate:
+                {
+                    UndoSpecialCreatureVisualNormalizer.OwlMagistrateVisualState visualState = UndoSpecialCreatureVisualNormalizer.GetOwlMagistrateVisualState(owlMagistrate);
+                    IReadOnlyList<string> expectedAnimations = visualState == UndoSpecialCreatureVisualNormalizer.OwlMagistrateVisualState.Flying ? ["fly_loop"] : ["idle_loop"];
+                    return BuildAnimationAssertion(assertion, animation, expectedAnimations, actualVisible: nodeVisible, expectedVisible: true);
+                }
                 case "bowlbug-rock" when creature.Monster is BowlbugRock bowlbugRock:
                     return BuildAnimationAssertion(assertion, animation, bowlbugRock.IsOffBalance ? ["stunned_loop"] : ["idle_loop"], actualVisible: nodeVisible, expectedVisible: true);
                 case "thieving-hopper" when creature.Monster is ThievingHopper thievingHopper:
@@ -701,34 +763,85 @@ internal static class UndoScenarioExecutor
                 {
                     string? nextMoveId = slumberingBeetle.NextMove?.Id;
                     bool hasSlumberPower = creature.HasPower<SlumberPower>();
+                    UndoSpecialCreatureVisualNormalizer.SlumberingBeetleVisualState visualState = UndoSpecialCreatureVisualNormalizer.GetSlumberingBeetleVisualState(slumberingBeetle);
                     bool passed = nextMoveId == MonsterModel.stunnedMoveId
-                        ? !slumberingBeetle.IntendsToAttack
+                        ? !slumberingBeetle.IntendsToAttack && visualState == UndoSpecialCreatureVisualNormalizer.SlumberingBeetleVisualState.WakeStun
                         : hasSlumberPower
-                            ? nextMoveId == "SNORE_MOVE" && !slumberingBeetle.IntendsToAttack
-                            : slumberingBeetle.IsAwake
-                                ? nextMoveId == "ROLL_OUT_MOVE" && slumberingBeetle.IntendsToAttack
-                                : !slumberingBeetle.IntendsToAttack;
+                            ? nextMoveId == "SNORE_MOVE" && !slumberingBeetle.IntendsToAttack && visualState == UndoSpecialCreatureVisualNormalizer.SlumberingBeetleVisualState.Sleeping
+                            : nextMoveId == "ROLL_OUT_MOVE" && slumberingBeetle.IntendsToAttack && visualState == UndoSpecialCreatureVisualNormalizer.SlumberingBeetleVisualState.Awake;
                     return new UndoScenarioAssertionResult
                     {
                         Assertion = assertion,
                         Passed = passed,
-                        Detail = $"next_move={nextMoveId ?? "null"}; awake={slumberingBeetle.IsAwake}; slumber={hasSlumberPower}; attacks={slumberingBeetle.IntendsToAttack}"
+                        Detail = $"next_move={nextMoveId ?? "null"}; awake={slumberingBeetle.IsAwake}; slumber={hasSlumberPower}; attacks={slumberingBeetle.IntendsToAttack}; visual={visualState}"
                     };
                 }
                 case "lagavulin-matriarch" when monster is LagavulinMatriarch lagavulinMatriarch:
                 {
                     string? nextMoveId = lagavulinMatriarch.NextMove?.Id;
-                    bool asleep = !lagavulinMatriarch.IsAwake || creature.HasPower<AsleepPower>();
+                    bool asleepPower = creature.HasPower<AsleepPower>();
+                    UndoSpecialCreatureVisualNormalizer.LagavulinVisualState visualState = UndoSpecialCreatureVisualNormalizer.GetLagavulinVisualState(lagavulinMatriarch);
                     bool passed = nextMoveId == MonsterModel.stunnedMoveId
-                        ? !lagavulinMatriarch.IntendsToAttack
-                        : asleep
-                            ? nextMoveId == "SLEEP_MOVE" && !lagavulinMatriarch.IntendsToAttack
-                            : true;
+                        ? !lagavulinMatriarch.IntendsToAttack && visualState == UndoSpecialCreatureVisualNormalizer.LagavulinVisualState.WakeStun
+                        : asleepPower
+                            ? nextMoveId == "SLEEP_MOVE" && !lagavulinMatriarch.IntendsToAttack && visualState == UndoSpecialCreatureVisualNormalizer.LagavulinVisualState.Sleeping
+                            : visualState == UndoSpecialCreatureVisualNormalizer.LagavulinVisualState.Awake;
                     return new UndoScenarioAssertionResult
                     {
                         Assertion = assertion,
                         Passed = passed,
-                        Detail = $"next_move={nextMoveId ?? "null"}; awake={lagavulinMatriarch.IsAwake}; asleep={asleep}; attacks={lagavulinMatriarch.IntendsToAttack}"
+                        Detail = $"next_move={nextMoveId ?? "null"}; awake={lagavulinMatriarch.IsAwake}; asleep={asleepPower}; attacks={lagavulinMatriarch.IntendsToAttack}; visual={visualState}"
+                    };
+                }
+                case "tunneler" when monster is Tunneler tunneler:
+                {
+                    string? nextMoveId = tunneler.NextMove?.Id;
+                    bool burrowedPower = creature.HasPower<BurrowedPower>();
+                    UndoSpecialCreatureVisualNormalizer.TunnelerVisualState visualState = UndoSpecialCreatureVisualNormalizer.GetTunnelerVisualState(tunneler);
+                    bool passed = nextMoveId == MonsterModel.stunnedMoveId || string.Equals(nextMoveId, "DIZZY_MOVE", StringComparison.Ordinal)
+                        ? !tunneler.IntendsToAttack && visualState == UndoSpecialCreatureVisualNormalizer.TunnelerVisualState.Stunned
+                        : burrowedPower
+                            ? (string.Equals(nextMoveId, "BURROW_MOVE", StringComparison.Ordinal) || string.Equals(nextMoveId, "BELOW_MOVE_1", StringComparison.Ordinal)) && visualState == UndoSpecialCreatureVisualNormalizer.TunnelerVisualState.Burrowed
+                            : visualState == UndoSpecialCreatureVisualNormalizer.TunnelerVisualState.Surfaced && (!string.Equals(nextMoveId, "BELOW_MOVE_1", StringComparison.Ordinal));
+                    return new UndoScenarioAssertionResult
+                    {
+                        Assertion = assertion,
+                        Passed = passed,
+                        Detail = $"next_move={nextMoveId ?? "null"}; burrowed={burrowedPower}; attacks={tunneler.IntendsToAttack}; visual={visualState}"
+                    };
+                }
+                case "owl-magistrate-flight" when monster is OwlMagistrate owlMagistrate:
+                {
+                    string? nextMoveId = owlMagistrate.NextMove?.Id;
+                    bool hasSoar = creature.HasPower<SoarPower>();
+                    bool isFlying = ReadPrivateBool(owlMagistrate, "IsFlying");
+                    UndoSpecialCreatureVisualNormalizer.OwlMagistrateVisualState visualState = UndoSpecialCreatureVisualNormalizer.GetOwlMagistrateVisualState(owlMagistrate);
+                    bool passed = visualState == UndoSpecialCreatureVisualNormalizer.OwlMagistrateVisualState.Flying
+                        ? isFlying && (hasSoar || string.Equals(nextMoveId, "VERDICT", StringComparison.Ordinal))
+                        : !isFlying && !hasSoar && !string.Equals(nextMoveId, "VERDICT", StringComparison.Ordinal);
+                    return new UndoScenarioAssertionResult
+                    {
+                        Assertion = assertion,
+                        Passed = passed,
+                        Detail = $"next_move={nextMoveId ?? "null"}; soar={hasSoar}; flying={isFlying}; attacks={owlMagistrate.IntendsToAttack}; visual={visualState}"
+                    };
+                }
+                case "queen-amalgam-branch" when monster is Queen queen:
+                {
+                    string? nextMoveId = queen.NextMove?.Id;
+                    bool hasAmalgamDied = ReadPrivateBool(queen, "HasAmalgamDied");
+                    Creature? amalgam = UndoReflectionUtil.FindProperty(queen.GetType(), "Amalgam")?.GetValue(queen) as Creature
+                        ?? UndoReflectionUtil.FindField(queen.GetType(), "_amalgam")?.GetValue(queen) as Creature;
+                    bool amalgamAlive = amalgam != null && !amalgam.IsDead;
+                    bool inDeathPath = string.Equals(nextMoveId, "OFF_WITH_YOUR_HEAD_MOVE", StringComparison.Ordinal)
+                        || string.Equals(nextMoveId, "EXECUTION_MOVE", StringComparison.Ordinal)
+                        || string.Equals(nextMoveId, "ENRAGE_MOVE", StringComparison.Ordinal);
+                    bool passed = amalgamAlive ? !hasAmalgamDied && !inDeathPath : hasAmalgamDied || inDeathPath;
+                    return new UndoScenarioAssertionResult
+                    {
+                        Assertion = assertion,
+                        Passed = passed,
+                        Detail = $"next_move={nextMoveId ?? "null"}; amalgam_alive={amalgamAlive}; has_amalgam_died={hasAmalgamDied}"
                     };
                 }
             }
@@ -861,6 +974,10 @@ internal static class UndoScenarioExecutor
             "decimillipede" => ["topology:Decimillipede"],
             "door-maker" => ["topology:DoorAndDoormaker", "power:DoorRevivalPower.isHalfDead"],
             "paels-legion" => ["relic:PaelsLegion.affectedCardPlay"],
+            "tunneler" => ["reconcile:Tunneler.BurrowIntent"],
+            "owl-magistrate-flight" => ["status:OwlMagistrate.IsFlying", "reconcile:OwlMagistrate.FlightState"],
+            "queen-soulbound" => ["power:ChainsOfBindingPower.boundCardPlayed"],
+            "queen-amalgam-branch" => ["status:Queen.HasAmalgamDied", "topology:QueenAmalgam", "reconcile:Queen.AmalgamBranch"],
             "slumbering-beetle" => ["status:SlumberingBeetle.IsAwake", "reconcile:SlumberingBeetle.MoveIntent"],
             "lagavulin-matriarch" => ["status:LagavulinMatriarch.IsAwake", "reconcile:LagavulinMatriarch.MoveIntent"],
             "bowlbug-rock" => ["status:BowlbugRock.IsOffBalance", "reconcile:GenericTransientStun"],

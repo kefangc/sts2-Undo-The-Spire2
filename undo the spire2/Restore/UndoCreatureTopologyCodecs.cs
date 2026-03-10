@@ -1,3 +1,4 @@
+using System.Reflection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -19,7 +20,8 @@ internal static class UndoCreatureTopologyCodecRegistry
             "topology:DoorAndDoormaker",
             "topology:Decimillipede",
             "topology:TestSubject",
-            "topology:InfestedPrism"
+            "topology:InfestedPrism",
+            "topology:QueenAmalgam"
         ];
     }
 
@@ -139,6 +141,17 @@ internal static class UndoCreatureTopologyCodecRegistry
                         && isReviving
                 };
                 break;
+            case Queen queen:
+                runtimeCodecId = "topology:QueenAmalgam";
+                Creature? amalgam = UndoReflectionUtil.FindProperty(queen.GetType(), "Amalgam")?.GetValue(queen) as Creature
+                    ?? UndoReflectionUtil.FindField(queen.GetType(), "_amalgam")?.GetValue(queen) as Creature;
+                linkedRefs = [.. CaptureLinkedCreatureRef(creatures, amalgam)];
+                runtimePayload = new UndoQueenTopologyRuntimeState
+                {
+                    CodecId = runtimeCodecId,
+                    AmalgamRef = UndoStableRefs.CaptureCreatureRef(creatures, amalgam)
+                };
+                break;
             default:
                 if (monster.Creature.GetPower<VitalSparkPower>() != null)
                     runtimeCodecId = "topology:InfestedPrism";
@@ -203,6 +216,8 @@ internal static class UndoCreatureTopologyCodecRegistry
                 return decimillipedeState.SegmentRefs.All(creatureRef => creaturesByKey.ContainsKey(creatureRef.Key));
             case UndoTestSubjectTopologyRuntimeState:
                 return true;
+            case UndoQueenTopologyRuntimeState queenState when monster is Queen queen:
+                return RestoreQueenTopology(queen, queenState, creaturesByKey);
             default:
                 return true;
         }
@@ -237,7 +252,51 @@ internal static class UndoCreatureTopologyCodecRegistry
         return creatures.Select(static creature => creature.Player)
             .FirstOrDefault(player => player?.NetId == ownerNetId);
     }
+
+
+    private static bool RestoreQueenTopology(Queen queen, UndoQueenTopologyRuntimeState state, IReadOnlyDictionary<string, Creature> creaturesByKey)
+    {
+        Creature? amalgam = null;
+        if (state.AmalgamRef != null && !creaturesByKey.TryGetValue(state.AmalgamRef.Key, out amalgam))
+            return false;
+
+        Creature? currentAmalgam = TryGetQueenAmalgam(queen);
+        if (currentAmalgam != null)
+            TryUnwireQueenAmalgamDeathHook(queen, currentAmalgam);
+
+        UndoReflectionUtil.TrySetPropertyValue(queen, "Amalgam", amalgam);
+        if (amalgam != null && !amalgam.IsDead)
+            TryWireQueenAmalgamDeathHook(queen, amalgam);
+
+        return true;
+    }
+
+    private static Creature? TryGetQueenAmalgam(Queen queen)
+    {
+        return UndoReflectionUtil.FindProperty(queen.GetType(), "Amalgam")?.GetValue(queen) as Creature
+            ?? UndoReflectionUtil.FindField(queen.GetType(), "_amalgam")?.GetValue(queen) as Creature;
+    }
+
+    private static void TryWireQueenAmalgamDeathHook(Queen queen, Creature amalgam)
+    {
+        Action<Creature>? handler = CreateQueenAmalgamDeathHandler(queen);
+        if (handler != null)
+            amalgam.Died += handler;
+    }
+
+    private static void TryUnwireQueenAmalgamDeathHook(Queen queen, Creature amalgam)
+    {
+        Action<Creature>? handler = CreateQueenAmalgamDeathHandler(queen);
+        if (handler != null)
+            amalgam.Died -= handler;
+    }
+
+    private static Action<Creature>? CreateQueenAmalgamDeathHandler(Queen queen)
+    {
+        MethodInfo? method = UndoReflectionUtil.FindMethod(queen.GetType(), "AmalgamDeathResponse");
+        if (method == null)
+            return null;
+
+        return Delegate.CreateDelegate(typeof(Action<Creature>), queen, method, throwOnBindFailure: false) as Action<Creature>;
+    }
 }
-
-
-
