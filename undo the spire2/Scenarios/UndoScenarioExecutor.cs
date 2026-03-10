@@ -49,6 +49,10 @@ internal sealed class UndoScenarioExecutionResult
     public IReadOnlyList<string> MissingExpectedUnsupportedCapabilities { get; init; } = [];
 
     public IReadOnlyList<string> UnexpectedUnsupportedCapabilities { get; init; } = [];
+
+    public bool DeclaredSupported { get; init; }
+
+    public bool RuntimeClosedLoop { get; init; }
 }
 
 internal sealed class UndoScenarioPreconditionResult
@@ -133,6 +137,8 @@ internal static class UndoScenarioExecutor
                 UnsupportedCapabilities = unsupported,
                 MissingExpectedUnsupportedCapabilities = missingExpectedUnsupported,
                 UnexpectedUnsupportedCapabilities = unexpectedUnsupported,
+                DeclaredSupported = false,
+                RuntimeClosedLoop = false,
                 Assertions = scenario.Assertions.Select(assertion => new UndoScenarioAssertionResult
                 {
                     Assertion = assertion,
@@ -153,7 +159,9 @@ internal static class UndoScenarioExecutor
                 Detail = "live_scenario_setup_required",
                 UnsupportedCapabilities = unsupported,
                 MissingExpectedUnsupportedCapabilities = missingExpectedUnsupported,
-                UnexpectedUnsupportedCapabilities = unexpectedUnsupported
+                UnexpectedUnsupportedCapabilities = unexpectedUnsupported,
+                DeclaredSupported = unexpectedUnsupported.Count == 0,
+                RuntimeClosedLoop = false
             };
         }
 
@@ -167,7 +175,9 @@ internal static class UndoScenarioExecutor
                 Detail = precondition.Detail,
                 UnsupportedCapabilities = unsupported,
                 MissingExpectedUnsupportedCapabilities = missingExpectedUnsupported,
-                UnexpectedUnsupportedCapabilities = unexpectedUnsupported
+                UnexpectedUnsupportedCapabilities = unexpectedUnsupported,
+                DeclaredSupported = unexpectedUnsupported.Count == 0,
+                RuntimeClosedLoop = false
             };
         }
 
@@ -180,7 +190,9 @@ internal static class UndoScenarioExecutor
             Assertions = result.Assertions,
             UnsupportedCapabilities = unsupported,
             MissingExpectedUnsupportedCapabilities = missingExpectedUnsupported,
-            UnexpectedUnsupportedCapabilities = unexpectedUnsupported
+            UnexpectedUnsupportedCapabilities = unexpectedUnsupported,
+            DeclaredSupported = result.DeclaredSupported || unexpectedUnsupported.Count == 0,
+            RuntimeClosedLoop = result.RuntimeClosedLoop
         };
     }
 
@@ -261,21 +273,53 @@ internal static class UndoScenarioExecutor
             Scenario = scenario,
             Status = passed ? UndoScenarioExecutionStatus.Passed : UndoScenarioExecutionStatus.Failed,
             Detail = $"undo_label={expectedRedoLabel} redo_label={expectedUndoLabel}",
-            Assertions = assertions
+            Assertions = assertions,
+            DeclaredSupported = true,
+            RuntimeClosedLoop = passed
         };
     }
 
-    private static Task<UndoScenarioExecutionResult> ExecuteWellLaidPlansScenarioAsync(UndoScenarioDefinition scenario, RunState runState, CombatState combatState)
+    private static async Task<UndoScenarioExecutionResult> ExecuteWellLaidPlansScenarioAsync(UndoScenarioDefinition scenario, RunState runState, CombatState combatState)
     {
         UndoController controller = MainFile.Controller;
+        if (!controller.HasUndo)
+        {
+            return new UndoScenarioExecutionResult
+            {
+                Scenario = scenario,
+                Status = UndoScenarioExecutionStatus.Skipped,
+                Detail = "undo_history_required",
+                DeclaredSupported = false,
+                RuntimeClosedLoop = false
+            };
+        }
+
         UndoChoiceSpec? activeChoice = TryCaptureActiveChoiceSpec(controller);
         UndoCombatFullState? currentSnapshot = TryCaptureCurrentCombatFullState(controller);
         PausedChoiceState? pausedChoice = currentSnapshot?.ActionKernelState.PausedChoiceState;
         RestoreCapabilityReport capability = UndoActionCodecRegistry.EvaluateCapability(pausedChoice);
-        bool supportedChoiceUiActive = IsSupportedChoiceUiActive();
         bool pausedChoiceCaptured = pausedChoice?.ChoiceSpec?.Kind == UndoChoiceKind.HandSelection
             && pausedChoice.SourceActionRef.ActionId != null;
         bool primaryChoiceSupported = capability.Result == RestoreCapabilityResult.Supported;
+        int hiddenSkipCountBefore = UndoController.DebugGetHiddenChoiceAnchorSkipCount();
+        bool primaryRestoreUsed = false;
+        bool retainSelectionReopened = IsSupportedChoiceUiActive() && activeChoice?.Kind == UndoChoiceKind.HandSelection;
+        bool noHiddenChoiceAnchorSkip = true;
+
+        if (pausedChoiceCaptured && primaryChoiceSupported)
+        {
+            controller.Undo();
+            bool restoreObserved = await WaitForHistoryMoveAsync(() => !controller.IsRestoring, controller);
+            activeChoice = TryCaptureActiveChoiceSpec(controller);
+            primaryRestoreUsed = restoreObserved && string.Equals(UndoController.DebugGetLastInteractionStage(), "primary_restore", StringComparison.Ordinal);
+            retainSelectionReopened = IsSupportedChoiceUiActive() && activeChoice?.Kind == UndoChoiceKind.HandSelection;
+            noHiddenChoiceAnchorSkip = UndoController.DebugGetHiddenChoiceAnchorSkipCount() == hiddenSkipCountBefore;
+        }
+        else
+        {
+            noHiddenChoiceAnchorSkip = UndoController.DebugGetHiddenChoiceAnchorSkipCount() == hiddenSkipCountBefore;
+        }
+
         List<UndoScenarioAssertionResult> assertions =
         [
             new UndoScenarioAssertionResult
@@ -292,26 +336,34 @@ internal static class UndoScenarioExecutor
             },
             new UndoScenarioAssertionResult
             {
-                Assertion = "retain_selection_reopens",
-                Passed = supportedChoiceUiActive && activeChoice?.Kind == UndoChoiceKind.HandSelection,
-                Detail = supportedChoiceUiActive ? "supported_choice_ui_active" : "supported_choice_ui_inactive"
+                Assertion = "primary_restore_used",
+                Passed = primaryRestoreUsed,
+                Detail = UndoController.DebugGetLastInteractionStage() ?? "no_restore_stage"
             },
             new UndoScenarioAssertionResult
             {
-                Assertion = "no_hidden_replay",
-                Passed = !HasSyntheticChoiceSession(controller),
-                Detail = HasSyntheticChoiceSession(controller) ? "synthetic_choice_session_active" : "primary_choice_ui_active"
+                Assertion = "retain_selection_reopens",
+                Passed = retainSelectionReopened,
+                Detail = retainSelectionReopened ? "supported_choice_ui_active" : "supported_choice_ui_inactive"
+            },
+            new UndoScenarioAssertionResult
+            {
+                Assertion = "no_hidden_choice_anchor_skip",
+                Passed = noHiddenChoiceAnchorSkip,
+                Detail = noHiddenChoiceAnchorSkip ? "hidden_anchor_skip_not_observed" : "hidden_anchor_skip_observed"
             }
         ];
 
         bool passed = assertions.All(static assertion => assertion.Passed);
-        return Task.FromResult(new UndoScenarioExecutionResult
+        return new UndoScenarioExecutionResult
         {
             Scenario = scenario,
             Status = passed ? UndoScenarioExecutionStatus.Passed : UndoScenarioExecutionStatus.Failed,
-            Detail = passed ? "choice_anchor_ready" : "choice_anchor_incomplete",
-            Assertions = assertions
-        });
+            Detail = passed ? "primary_choice_runtime_closed" : "primary_choice_runtime_incomplete",
+            Assertions = assertions,
+            DeclaredSupported = primaryChoiceSupported,
+            RuntimeClosedLoop = passed
+        };
     }
 
     private static async Task<bool> WaitForHistoryMoveAsync(Func<bool> completion, UndoController controller, int timeoutMs = 5000)
@@ -464,13 +516,14 @@ internal static class UndoScenarioExecutor
                 "cards_left_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.PowerRuntimeStates, redoState.RuntimeGraphState.PowerRuntimeStates, "power_runtime_roundtrip"),
                 "display_counter_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.PowerRuntimeStates, redoState.RuntimeGraphState.PowerRuntimeStates, "power_runtime_roundtrip"),
                 "first_damage_only_triggers_once_after_undo" => CompareProjection(assertion, targetState.RuntimeGraphState.PowerRuntimeStates, redoState.RuntimeGraphState.PowerRuntimeStates, "power_runtime_roundtrip"),
-                "reviving_state_restores" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
-                "segment_rejoins_correctly" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
-                "door_phase_restores" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
-                "times_got_back_in_restores" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
-                "pet_role_restores" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
-                "pet_owner_restores" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
-                "no_duplicate_pet_after_undo" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
+                "reviving_state_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
+                "segment_rejoins_correctly" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
+                "door_phase_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
+                "times_got_back_in_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
+                "pet_role_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
+                "pet_owner_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
+                "no_duplicate_pet_after_undo" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
+                "pet_visual_state_restores" => AssertPaelsLegionVisualState(assertion),
                 "turn_counter_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.RelicRuntimeStates, redoState.RuntimeGraphState.RelicRuntimeStates, "relic_runtime_roundtrip"),
                 "activation_flag_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.RelicRuntimeStates, redoState.RuntimeGraphState.RelicRuntimeStates, "relic_runtime_roundtrip"),
                 "last_turn_card_replay_restores" => CompareProjection(assertion, targetState.CombatHistoryState, redoState.CombatHistoryState, "combat_history_roundtrip"),
@@ -493,7 +546,44 @@ internal static class UndoScenarioExecutor
         return assertions;
     }
 
-    private static object ProjectTopology(IReadOnlyList<MonsterTopologyState> states)
+    private static UndoScenarioAssertionResult AssertPaelsLegionVisualState(string assertion)
+    {
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatState == null || combatRoom == null)
+        {
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = false,
+                Detail = combatState == null ? "combat_state_missing" : "combat_room_missing"
+            };
+        }
+
+        foreach (Creature creature in combatState.Allies)
+        {
+            if (!UndoSpecialCreatureVisualNormalizer.TryGetPaelsLegionExpectation(creature, out UndoSpecialCreatureVisualNormalizer.PaelsLegionVisualExpectation? expectation))
+                continue;
+
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            string? animationName = creatureNode?.Visuals?.SpineBody?.GetAnimationState()?.GetCurrent(0)?.GetAnimation()?.GetName();
+            bool passed = animationName != null && expectation.AcceptableAnimationNames.Contains(animationName, StringComparer.Ordinal);
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = passed,
+                Detail = passed ? $"animation={animationName}" : $"expected={string.Join("/", expectation.AcceptableAnimationNames)} actual={animationName ?? "null"}"
+            };
+        }
+
+        return new UndoScenarioAssertionResult
+        {
+            Assertion = assertion,
+            Passed = false,
+            Detail = "paels_legion_pet_missing"
+        };
+    }
+    private static object ProjectTopology(IReadOnlyList<CreatureTopologyState> states)
     {
         return states
             .OrderBy(static state => state.CreatureRef?.Key, StringComparer.Ordinal)
@@ -519,7 +609,7 @@ internal static class UndoScenarioExecutor
             .ToList();
     }
 
-    private static object? ProjectRuntimePayload(UndoMonsterTopologyRuntimeState? payload)
+    private static object? ProjectRuntimePayload(UndoCreatureTopologyRuntimeState? payload)
     {
         return payload switch
         {
@@ -541,7 +631,7 @@ internal static class UndoScenarioExecutor
                 testSubject.CodecId,
                 testSubject.IsReviving
             },
-            UndoMonsterTopologyRuntimeState topologyPayload => new
+            UndoCreatureTopologyRuntimeState topologyPayload => new
             {
                 topologyPayload.CodecId
             },
@@ -567,7 +657,7 @@ internal static class UndoScenarioExecutor
     private static List<string> GetCapabilityGaps(UndoScenarioDefinition scenario)
     {
         HashSet<string> implemented = UndoRuntimeStateCodecRegistry.GetImplementedCodecIds();
-        implemented.UnionWith(UndoMonsterTopologyCodecRegistry.GetImplementedCodecIds());
+        implemented.UnionWith(UndoCreatureTopologyCodecRegistry.GetImplementedCodecIds());
         implemented.UnionWith(UndoActionCodecRegistry.GetImplementedCodecIds());
 
         List<string> required = scenario.Id switch
@@ -592,6 +682,12 @@ internal static class UndoScenarioExecutor
         return required.Where(requiredId => !implemented.Contains(requiredId)).ToList();
     }
 }
+
+
+
+
+
+
 
 
 

@@ -13,7 +13,7 @@ internal enum CreatureRole
     Pet
 }
 
-internal sealed class MonsterTopologyState
+internal sealed class CreatureTopologyState
 {
     public CreatureRef? CreatureRef { get; init; }
 
@@ -45,15 +45,15 @@ internal sealed class MonsterTopologyState
 
     public string? RuntimeCodecId { get; init; }
 
-    public UndoMonsterTopologyRuntimeState? RuntimePayload { get; init; }
+    public UndoCreatureTopologyRuntimeState? RuntimePayload { get; init; }
 }
 
-internal abstract class UndoMonsterTopologyRuntimeState
+internal abstract class UndoCreatureTopologyRuntimeState
 {
     public required string CodecId { get; init; }
 }
 
-internal sealed class UndoDoorTopologyRuntimeState : UndoMonsterTopologyRuntimeState
+internal sealed class UndoDoorTopologyRuntimeState : UndoCreatureTopologyRuntimeState
 {
     public CreatureRef? DoormakerRef { get; init; }
 
@@ -62,24 +62,25 @@ internal sealed class UndoDoorTopologyRuntimeState : UndoMonsterTopologyRuntimeS
     public int? TimesGotBackIn { get; init; }
 }
 
-internal sealed class UndoDecimillipedeTopologyRuntimeState : UndoMonsterTopologyRuntimeState
+internal sealed class UndoDecimillipedeTopologyRuntimeState : UndoCreatureTopologyRuntimeState
 {
     public int StarterMoveIdx { get; init; }
 
     public IReadOnlyList<CreatureRef> SegmentRefs { get; init; } = [];
 }
 
-internal sealed class UndoTestSubjectTopologyRuntimeState : UndoMonsterTopologyRuntimeState
+internal sealed class UndoTestSubjectTopologyRuntimeState : UndoCreatureTopologyRuntimeState
 {
     public bool IsReviving { get; init; }
 }
 
-internal sealed class UndoMonsterTopologyCaptureContext
+internal sealed class UndoCreatureTopologyCaptureContext
 {
     public required IReadOnlyList<Creature> Creatures { get; init; }
 }
 
-internal sealed class UndoMonsterTopologyRestoreContext
+internal sealed class UndoCreatureTopologyRestoreContext
 {
     public required IReadOnlyList<Creature> Creatures { get; init; }
 }
+

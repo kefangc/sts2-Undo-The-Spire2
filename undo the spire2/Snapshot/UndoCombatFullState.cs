@@ -1,3 +1,5 @@
+// Represents the mod-owned combat save-state kernel layered above NetFullCombatState.
+// It aggregates official state, history, runtime graph, action kernel, and topology supplements.
 using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -29,7 +31,7 @@ internal sealed class UndoCombatFullState
         IReadOnlyList<UndoFirstInSeriesPlayCountState>? firstInSeriesPlayCounts = null,
         RuntimeGraphState? runtimeGraphState = null,
         PresentationHints? presentationHints = null,
-        IReadOnlyList<MonsterTopologyState>? monsterTopologyStates = null,
+        IReadOnlyList<CreatureTopologyState>? creatureTopologyStates = null,
         int schemaVersion = CurrentSchemaVersion)
     {
         SchemaVersion = schemaVersion;
@@ -43,7 +45,7 @@ internal sealed class UndoCombatFullState
         CombatHistoryState = combatHistoryState ?? UndoCombatHistoryState.Empty;
         ActionKernelState = actionKernelState ?? ActionKernelState.Empty;
         MonsterStates = monsterStates;
-        MonsterTopologyStates = monsterTopologyStates ?? [];
+        CreatureTopologyStates = creatureTopologyStates ?? [];
         CardCostStates = cardCostStates;
         CardRuntimeStates = cardRuntimeStates ?? [];
         PowerRuntimeStates = powerRuntimeStates ?? [];
@@ -84,7 +86,7 @@ internal sealed class UndoCombatFullState
 
     public IReadOnlyList<UndoMonsterState> MonsterStates { get; }
 
-    public IReadOnlyList<MonsterTopologyState> MonsterTopologyStates { get; }
+    public IReadOnlyList<CreatureTopologyState> CreatureTopologyStates { get; }
 
     public IReadOnlyList<UndoPlayerPileCardCostState> CardCostStates { get; }
 
@@ -111,3 +113,6 @@ internal sealed class UndoPlayerPileCardCostState
 
     public required IReadOnlyList<UndoCardCostState> Cards { get; init; }
 }
+
+
+

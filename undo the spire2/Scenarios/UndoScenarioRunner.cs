@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 
 namespace UndoTheSpire2;
@@ -48,6 +48,8 @@ internal sealed class UndoScenarioReport
             builder.AppendLine($"## {result.Scenario.Title}");
             builder.AppendLine($"- Id: {result.Scenario.Id}");
             builder.AppendLine($"- Status: {result.Status}");
+            builder.AppendLine($"- Declared supported: {result.DeclaredSupported}");
+            builder.AppendLine($"- Runtime closed loop: {result.RuntimeClosedLoop}");
             if (!string.IsNullOrWhiteSpace(result.Detail))
                 builder.AppendLine($"- Detail: {result.Detail}");
             if (result.UnsupportedCapabilities.Count > 0)
@@ -153,7 +155,8 @@ internal static class UndoScenarioRunner
         IReadOnlyList<string> lines = results
             .Where(static result => result.UnsupportedCapabilities.Count > 0
                 || result.MissingExpectedUnsupportedCapabilities.Count > 0
-                || result.UnexpectedUnsupportedCapabilities.Count > 0)
+                || result.UnexpectedUnsupportedCapabilities.Count > 0
+                || (result.DeclaredSupported && !result.RuntimeClosedLoop))
             .Select(BuildUnsupportedLine)
             .ToList();
 
@@ -171,7 +174,13 @@ internal static class UndoScenarioRunner
             parts.Add($"missing_expected={string.Join(", ", result.MissingExpectedUnsupportedCapabilities)}");
         if (result.UnexpectedUnsupportedCapabilities.Count > 0)
             parts.Add($"unexpected={string.Join(", ", result.UnexpectedUnsupportedCapabilities)}");
+        if (result.DeclaredSupported && !result.RuntimeClosedLoop)
+            parts.Add($"runtime_open={result.Detail ?? "runtime_closed_loop_not_reached"}");
 
         return $"- {result.Scenario.Id}: {string.Join("; ", parts)}";
     }
 }
+
+
+
+

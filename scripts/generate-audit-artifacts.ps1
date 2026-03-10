@@ -96,14 +96,14 @@ $coverageMatrix = @($cards + $powers + $relics + $monsters + $actions)
 $coverageMatrix | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $auditDir 'coverage-matrix.json')
 
 $knownCases = @(
-    [pscustomobject]@{ id='well-laid-plans'; title='Well Laid Plans'; category='power'; sourceFiles=@('WellLaidPlansPower.cs','CardSelectCmd.cs'); primaryRisk='Paused choice continuation'; scenarioTags=@('choice','retain','end-turn'); assertions=@('paused_choice_captured','primary_choice_supported','retain_selection_reopens','no_hidden_replay') },
+    [pscustomobject]@{ id='well-laid-plans'; title='Well Laid Plans'; category='power'; sourceFiles=@('WellLaidPlansPower.cs','CardSelectCmd.cs'); primaryRisk='Paused choice continuation'; scenarioTags=@('choice','retain','end-turn'); assertions=@('paused_choice_captured','primary_choice_supported','primary_restore_used','retain_selection_reopens','no_hidden_choice_anchor_skip') },
     [pscustomobject]@{ id='forgotten-ritual'; title='Forgotten Ritual'; category='card'; sourceFiles=@('ForgottenRitual.cs','CardExhaustedEntry.cs'); primaryRisk='CombatHistory missing'; scenarioTags=@('history','exhaust'); assertions=@('exhaust_history_survives_undo','gold_glow_matches_history') },
     [pscustomobject]@{ id='death-march'; title='Death March'; category='card'; sourceFiles=@('DeathMarch.cs','CardDrawnEntry.cs'); primaryRisk='Per-turn draw history'; scenarioTags=@('history','draw-count'); assertions=@('draw_count_damage_restores') },
     [pscustomobject]@{ id='automation-power'; title='Automation Power'; category='power'; sourceFiles=@('AutomationPower.cs'); primaryRisk='Internal counter cardsLeft'; scenarioTags=@('internal-data','counter'); assertions=@('cards_left_restores','display_counter_restores') },
     [pscustomobject]@{ id='infested-prism'; title='Infested Prism'; category='monster'; sourceFiles=@('InfestedPrism.cs','VitalSparkPower.cs'); primaryRisk='playersTriggeredThisTurn'; scenarioTags=@('monster','power','internal-data'); assertions=@('first_damage_only_triggers_once_after_undo') },
     [pscustomobject]@{ id='decimillipede'; title='Decimillipede'; category='monster'; sourceFiles=@('DecimillipedeSegment.cs','ReattachPower.cs'); primaryRisk='revive topology'; scenarioTags=@('monster','revive','topology'); assertions=@('reviving_state_restores','segment_rejoins_correctly') },
     [pscustomobject]@{ id='door-maker'; title='Doormaker'; category='monster'; sourceFiles=@('Door.cs','Doormaker.cs','DoorRevivalPower.cs'); primaryRisk='cross-creature topology'; scenarioTags=@('monster','boss','topology'); assertions=@('door_phase_restores','times_got_back_in_restores') },
-    [pscustomobject]@{ id='paels-legion'; title='Pael''s Legion'; category='relic'; sourceFiles=@('PaelsLegion.cs','PaelsLegion.cs'); primaryRisk='pet ownership topology'; scenarioTags=@('relic','pet','topology'); assertions=@('pet_role_restores','pet_owner_restores','no_duplicate_pet_after_undo') },
+    [pscustomobject]@{ id='paels-legion'; title='Pael''s Legion'; category='relic'; sourceFiles=@('PaelsLegion.cs','PaelsLegion.cs'); primaryRisk='pet ownership topology'; scenarioTags=@('relic','pet','topology'); assertions=@('pet_role_restores','pet_owner_restores','no_duplicate_pet_after_undo','pet_visual_state_restores') },
     [pscustomobject]@{ id='throwing-axe'; title='Throwing Axe'; category='relic'; sourceFiles=@('ThrowingAxe.cs'); primaryRisk='simple combat flag'; scenarioTags=@('relic','counter'); assertions=@('first_card_double_flag_restores') },
     [pscustomobject]@{ id='happy-flower'; title='Happy Flower'; category='relic'; sourceFiles=@('HappyFlower.cs'); primaryRisk='saved property plus runtime flag'; scenarioTags=@('relic','counter'); assertions=@('turn_counter_restores','activation_flag_restores') },
     [pscustomobject]@{ id='history-course'; title='History Course'; category='relic'; sourceFiles=@('HistoryCourse.cs'); primaryRisk='last turn card identity'; scenarioTags=@('relic','history'); assertions=@('last_turn_card_replay_restores') },
@@ -113,8 +113,8 @@ $knownCases = @(
 )
 
 $implementedCodecIds = @()
-$runtimeCodecFile = Join-Path $RepoRoot 'UndoRuntimeCodecs.cs'
-$actionCodecFile = Join-Path $RepoRoot 'UndoActionCodecs.cs'
+$runtimeCodecFile = Join-Path $RepoRoot 'Restore\UndoRuntimeCodecs.cs'
+$actionCodecFile = Join-Path $RepoRoot 'Restore\UndoActionCodecs.cs'
 $codecTexts = @()
 if (Test-Path $runtimeCodecFile) {
     $codecTexts += Read-Text $runtimeCodecFile
@@ -269,7 +269,7 @@ Implemented runtime codecs: $($implementedCodecIds.Count)
 ## Notes
 - This report is generated from official source scanning plus curated known regressions.
 - The cache artifacts are intended to be implementation inputs for the undo kernel refactor.
-- Action kernel coverage is intentionally partial in this increment; the artifacts mark it separately.
+- Action codec coverage and runtime closed-loop are tracked separately; static cache generation does not imply a live runtime pass.
 - Runtime coverage now includes card, relic, power, topology, and action registry seeds.
 "@
 $auditSummary | Set-Content (Join-Path $reportsDir 'audit-summary.md')
@@ -284,17 +284,45 @@ $((@($officialRuntimePatterns | Where-Object { -not $_.implemented }) | ForEach-
 "@
 $auditCoverageReport | Set-Content (Join-Path $reportsDir 'audit-coverage-report.md')
 
+function Get-ScenarioDeclaredSupport([string]$ScenarioId) {
+    switch ($ScenarioId) {
+        'well-laid-plans' { return $officialRuntimePatterns.Where({ $_.id -eq 'action:WellLaidPlans.choice' }).implemented -contains $true }
+        'forgotten-ritual' { return $officialRuntimePatterns.Where({ $_.id -eq 'history:CombatHistory.entries' }).implemented -contains $true }
+        'automation-power' { return $officialRuntimePatterns.Where({ $_.id -eq 'power:AutomationPower.cardsLeft' }).implemented -contains $true }
+        'infested-prism' { return $officialRuntimePatterns.Where({ $_.id -eq 'power:VitalSparkPower.playersTriggeredThisTurn' }).implemented -contains $true }
+        'decimillipede' { return $officialRuntimePatterns.Where({ $_.id -eq 'topology:Decimillipede' }).implemented -contains $true }
+        'door-maker' { return $officialRuntimePatterns.Where({ $_.id -eq 'topology:DoorAndDoormaker' }).implemented -contains $true }
+        'paels-legion' { return $officialRuntimePatterns.Where({ $_.id -eq 'relic:PaelsLegion.affectedCardPlay' }).implemented -contains $true }
+        'pen-nib' { return $officialRuntimePatterns.Where({ $_.id -eq 'relic:PenNib.AttackToDouble' }).implemented -contains $true }
+        'death-march' { return $officialRuntimePatterns.Where({ $_.id -eq 'history:CombatHistory.entries' }).implemented -contains $true }
+        default { return $true }
+    }
+}
+
 $scenarioRunReport = @"
 # Scenario Run Report
 
 - Scenario definitions generated: $($knownCases.Count)
+- This file is generated from static definitions and curated audit data.
+- Declared support comes from registry coverage.
+- Runtime closed loop must be validated in-game via UndoScenarioRunner.
 
-$((@($knownCases) | ForEach-Object { "## $($_.title)`r`n- id: $($_.id)`r`n- assertions: $([string]::Join(', ', $_.assertions))" }) -join "`r`n`r`n")
+$((@($knownCases) | ForEach-Object {
+    "## $($_.title)`r`n- id: $($_.id)`r`n- declared_supported: $(Get-ScenarioDeclaredSupport $_.id)`r`n- runtime_closed_loop: pending_live_validation`r`n- assertions: $([string]::Join(', ', $_.assertions))"
+}) -join "`r`n`r`n")
 "@
 $scenarioRunReport | Set-Content (Join-Path $reportsDir 'scenario-run-report.md')
 
 $unsupportedCapabilityIds = @($officialRuntimePatterns | Where-Object { -not $_.implemented } | ForEach-Object { $_.id })
-$unsupportedCapabilityLines = if ($unsupportedCapabilityIds.Count -eq 0) { @('- none') } else { $unsupportedCapabilityIds | ForEach-Object { "- $_" } }
+$runtimePendingIds = @('well-laid-plans:runtime_closed_loop_pending','paels-legion:runtime_closed_loop_pending')
+$unsupportedCapabilityLines = @()
+if ($unsupportedCapabilityIds.Count -gt 0) {
+    $unsupportedCapabilityLines += $unsupportedCapabilityIds | ForEach-Object { "- $_" }
+}
+$unsupportedCapabilityLines += $runtimePendingIds | ForEach-Object { "- $_" }
+if ($unsupportedCapabilityLines.Count -eq 0) {
+    $unsupportedCapabilityLines = @('- none')
+}
 $unsupportedCapabilitiesReport = @"
 # Unsupported Capabilities Report
 
@@ -303,4 +331,6 @@ $($unsupportedCapabilityLines -join "`r`n")
 $unsupportedCapabilitiesReport | Set-Content (Join-Path $reportsDir 'unsupported-capabilities-report.md')
 
 Write-Host "Generated audit artifacts under $CacheRoot"
+
+
 

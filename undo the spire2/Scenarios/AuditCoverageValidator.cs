@@ -44,7 +44,7 @@ internal static class AuditCoverageValidator
             File.ReadAllText(officialRuntimePatternsPath),
             options) ?? [];
         HashSet<string> implementedIds = UndoRuntimeStateCodecRegistry.GetImplementedCodecIds();
-        implementedIds.UnionWith(UndoMonsterTopologyCodecRegistry.GetImplementedCodecIds());
+        implementedIds.UnionWith(UndoCreatureTopologyCodecRegistry.GetImplementedCodecIds());
         implementedIds.UnionWith(UndoActionCodecRegistry.GetImplementedCodecIds());
 
         List<string> missingOfficialPatterns = records
@@ -70,7 +70,7 @@ internal static class AuditCoverageValidator
     public static string BuildMarkdownReport(AuditCoverageValidationResult result)
     {
         if (result.IsSuccess)
-            return "# Audit Coverage Report`r`n`r`n- All tracked official runtime patterns are aligned with the registry.";
+            return string.Join(Environment.NewLine, ["# Audit Coverage Report", string.Empty, "- All tracked official runtime patterns are aligned with the registry."]);
 
         List<string> lines =
         [
@@ -93,3 +93,5 @@ internal static class AuditCoverageValidator
         return string.Join(Environment.NewLine, lines);
     }
 }
+
+

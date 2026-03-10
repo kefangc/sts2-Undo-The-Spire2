@@ -1,3 +1,5 @@
+// Coordinates undo/redo history and restore transactions.
+// Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;
 using Godot;
 using MegaCrit.Sts2.Core.CardSelection;
@@ -77,6 +79,8 @@ public sealed class UndoController
     private int _blockedTurnRound = -1;
     private string? _lastRestoreFailureReason;
     private RestoreCapabilityReport _lastRestoreCapabilityReport = RestoreCapabilityReport.SupportedReport();
+    private static string? _lastInteractionStage;
+    private static int _hiddenChoiceAnchorSkipCount;
     private readonly Dictionary<string, int> _firstInSeriesPlayCountOverrides = [];
     private int _firstInSeriesPlayCountOverrideRound = -1;
     private CombatSide _firstInSeriesPlayCountOverrideSide;
@@ -109,7 +113,7 @@ public sealed class UndoController
     private UndoSnapshot? GetVisibleSnapshot(LinkedList<UndoSnapshot> snapshots)
     {
         LinkedListNode<UndoSnapshot>? node = snapshots.First;
-        if (!UndoModSettings.EnableChoiceUndo)
+        if (!UndoModSettings.EnableChoiceUndo && !UndoModSettings.EnableUnifiedEffectMode)
         {
             while (node != null && node.Value.IsChoiceAnchor)
                 node = node.Next;
@@ -120,12 +124,13 @@ public sealed class UndoController
 
     private void DiscardHiddenChoiceAnchors(LinkedList<UndoSnapshot> snapshots, string operation)
     {
-        if (UndoModSettings.EnableChoiceUndo)
+        if (UndoModSettings.EnableChoiceUndo || UndoModSettings.EnableUnifiedEffectMode)
             return;
 
         while (snapshots.First?.Value is UndoSnapshot snapshot && snapshot.IsChoiceAnchor)
         {
             snapshots.RemoveFirst();
+            _hiddenChoiceAnchorSkipCount++;
             MainFile.Logger.Info($"Skipped hidden choice anchor during {operation}. ReplayEvents={snapshot.ReplayEventCount}");
         }
     }
@@ -678,6 +683,22 @@ public sealed class UndoController
     {
         if (snapshot.IsChoiceAnchor)
         {
+            UndoSnapshot? choiceBranchTemplate = branchSnapshot ?? FindSyntheticChoiceTemplateSnapshot(baseSnapshot, snapshot.ReplayEventCount);
+            if (UndoModSettings.EnableUnifiedEffectMode)
+            {
+                if (await TryRestorePrimaryChoiceAsync(snapshot, choiceBranchTemplate))
+                {
+                    WriteInteractionLog("primary_restore", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} mode=choice_anchor");
+                    return "primary_choice";
+                }
+
+                if (UndoModSettings.EnableChoiceUndo && snapshot.ChoiceSpec?.SupportsSyntheticRestore == true && await TryRestoreSyntheticChoiceAsync(snapshot, choiceBranchTemplate))
+                {
+                    WriteInteractionLog("fallback_restore", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} mode=choice_anchor");
+                    return "fallback_choice";
+                }
+            }
+
             if (!UndoModSettings.EnableChoiceUndo && baseSnapshot != null)
             {
                 if (await TryApplyFullStateInPlaceAsync(baseSnapshot.CombatState))
@@ -691,18 +712,6 @@ public sealed class UndoController
 
             if (UndoModSettings.EnableUnifiedEffectMode)
             {
-                if (await TryRestorePrimaryChoiceAsync(snapshot, branchSnapshot))
-                {
-                    WriteInteractionLog("primary_restore", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} mode=choice_anchor");
-                    return "primary_choice";
-                }
-
-                if (snapshot.ChoiceSpec?.SupportsSyntheticRestore == true && await TryRestoreSyntheticChoiceAsync(snapshot, branchSnapshot))
-                {
-                    WriteInteractionLog("fallback_restore", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} mode=choice_anchor");
-                    return "fallback_choice";
-                }
-
                 WriteInteractionLog("restore_choice_instant_failed", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
                 throw new InvalidOperationException(_lastRestoreFailureReason ?? "Choice instant restore failed.");
             }
@@ -2229,7 +2238,7 @@ public sealed class UndoController
             RunManager.Instance.ChecksumTracker.LoadReplayChecksums([], snapshot.NextChecksumId);
             RunManager.Instance.PlayerChoiceSynchronizer.FastForwardChoiceIds([.. snapshot.FullState.nextChoiceIds]);
 
-            RestoreCapabilityReport topologyReport = UndoMonsterTopologyCodecRegistry.Restore(snapshot.MonsterTopologyStates, combatState.Creatures);
+            RestoreCapabilityReport topologyReport = UndoCreatureTopologyCodecRegistry.Restore(snapshot.CreatureTopologyStates, combatState.Creatures);
             if (topologyReport.IsFailure)
             {
                 _lastRestoreFailureReason = topologyReport.Detail ?? topologyReport.Result.ToString();
@@ -2830,8 +2839,19 @@ public sealed class UndoController
         return true;
     }
 
+    internal static string? DebugGetLastInteractionStage()
+    {
+        return _lastInteractionStage;
+    }
+
+    internal static int DebugGetHiddenChoiceAnchorSkipCount()
+    {
+        return _hiddenChoiceAnchorSkipCount;
+    }
+
     private static void WriteInteractionLog(string stage, string? extra = null)
     {
+        _lastInteractionStage = stage;
         try
         {
             CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
@@ -2979,7 +2999,7 @@ public sealed class UndoController
             CaptureRelicRuntimeStates(runState, combatState),
             selectionSessionState,
             CaptureFirstInSeriesPlayCounts(combatState),
-            monsterTopologyStates: UndoMonsterTopologyCodecRegistry.Capture(combatState.Creatures));
+            creatureTopologyStates: UndoCreatureTopologyCodecRegistry.Capture(combatState.Creatures));
     }
 
     private static IReadOnlyList<UndoMonsterState> CaptureMonsterStates(IReadOnlyList<Creature> creatures)
@@ -4106,7 +4126,7 @@ public sealed class UndoController
         HashSet<Creature> usedEnemies = [];
         List<Creature> desiredAllies = [];
         List<Creature> desiredEnemies = [];
-        List<MonsterTopologyState> topologyStates = snapshotState.MonsterTopologyStates.ToList();
+        List<CreatureTopologyState> topologyStates = snapshotState.CreatureTopologyStates.ToList();
         List<UndoMonsterState> snapshotMonsterStates = snapshotState.MonsterStates.ToList();
         int monsterIndex = 0;
 
@@ -4121,7 +4141,7 @@ public sealed class UndoController
                 continue;
             }
 
-            MonsterTopologyState? topologyState = monsterIndex < topologyStates.Count ? topologyStates[monsterIndex] : null;
+            CreatureTopologyState? topologyState = monsterIndex < topologyStates.Count ? topologyStates[monsterIndex] : null;
             UndoMonsterState? monsterState = monsterIndex < snapshotMonsterStates.Count ? snapshotMonsterStates[monsterIndex] : null;
             monsterIndex++;
 
@@ -4176,7 +4196,7 @@ public sealed class UndoController
         RunState runState,
         CombatState combatState,
         NetFullCombatState.CreatureState creatureState,
-        MonsterTopologyState? topologyState,
+        CreatureTopologyState? topologyState,
         UndoMonsterState? monsterState,
         IReadOnlyList<Creature> currentAllies,
         IReadOnlyList<Creature> currentEnemies,
@@ -4469,16 +4489,19 @@ public sealed class UndoController
             }
 
             SnapEnemyCreatureNodesToSlots(combatState);
+            UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
         }
         await WaitOneFrameAsync();
         if (NCombatRoom.Instance != null)
         {
             ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, LocalContext.GetMe(combatState));
             SnapEnemyCreatureNodesToSlots(combatState);
+            UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
         }
 
         NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoRefreshCombatUiAsync"]);
     }
+
 
     private static void RestoreThievingHopperDisplayCards(CombatState combatState)
     {
@@ -5278,6 +5301,16 @@ public sealed class UndoController
 
     private sealed record SyntheticTransformVfxCard(SerializableCard Card, int SourcePileIndex);
 }
+
+
+
+
+
+
+
+
+
+
 
 
 

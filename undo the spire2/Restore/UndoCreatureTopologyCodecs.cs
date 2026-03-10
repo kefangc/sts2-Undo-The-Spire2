@@ -10,7 +10,7 @@ namespace UndoTheSpire2;
 
 // Monster topology covers linked-monster runtime and pet ownership that the
 // official full combat snapshot does not preserve.
-internal static class UndoMonsterTopologyCodecRegistry
+internal static class UndoCreatureTopologyCodecRegistry
 {
     public static HashSet<string> GetImplementedCodecIds()
     {
@@ -23,14 +23,14 @@ internal static class UndoMonsterTopologyCodecRegistry
         ];
     }
 
-    public static IReadOnlyList<MonsterTopologyState> Capture(IReadOnlyList<Creature> creatures)
+    public static IReadOnlyList<CreatureTopologyState> Capture(IReadOnlyList<Creature> creatures)
     {
-        UndoMonsterTopologyCaptureContext context = new()
+        UndoCreatureTopologyCaptureContext context = new()
         {
             Creatures = creatures
         };
 
-        List<MonsterTopologyState> states = [];
+        List<CreatureTopologyState> states = [];
         for (int i = 0; i < creatures.Count; i++)
         {
             Creature creature = creatures[i];
@@ -38,24 +38,24 @@ internal static class UndoMonsterTopologyCodecRegistry
             if (monster == null)
                 continue;
 
-            states.Add(CaptureMonsterTopologyState(monster, creatures, i, context));
+            states.Add(CaptureCreatureTopologyState(monster, creatures, i, context));
         }
 
         return states;
     }
 
-    public static RestoreCapabilityReport Restore(IReadOnlyList<MonsterTopologyState> states, IReadOnlyList<Creature> creatures)
+    public static RestoreCapabilityReport Restore(IReadOnlyList<CreatureTopologyState> states, IReadOnlyList<Creature> creatures)
     {
         if (states.Count == 0)
             return RestoreCapabilityReport.SupportedReport();
 
         Dictionary<string, Creature> creaturesByKey = UndoStableRefs.BuildCreatureKeyMap(creatures);
-        UndoMonsterTopologyRestoreContext context = new()
+        UndoCreatureTopologyRestoreContext context = new()
         {
             Creatures = creatures
         };
 
-        foreach (MonsterTopologyState state in states)
+        foreach (CreatureTopologyState state in states)
         {
             if (state.CreatureRef == null || !creaturesByKey.TryGetValue(state.CreatureRef.Key, out Creature? creature) || creature.Monster == null)
             {
@@ -89,7 +89,7 @@ internal static class UndoMonsterTopologyCodecRegistry
         return RestoreCapabilityReport.SupportedReport();
     }
 
-    private static MonsterTopologyState CaptureMonsterTopologyState(MonsterModel monster, IReadOnlyList<Creature> creatures, int index, UndoMonsterTopologyCaptureContext context)
+    private static CreatureTopologyState CaptureCreatureTopologyState(MonsterModel monster, IReadOnlyList<Creature> creatures, int index, UndoCreatureTopologyCaptureContext context)
     {
         MonsterMoveStateMachine? moveStateMachine = monster.MoveStateMachine;
         MonsterState? currentState = moveStateMachine == null
@@ -99,7 +99,7 @@ internal static class UndoMonsterTopologyCodecRegistry
         bool isHalfDead = monster.Creature.GetPower<DoorRevivalPower>()?.IsHalfDead == true;
 
         string? runtimeCodecId = null;
-        UndoMonsterTopologyRuntimeState? runtimePayload = null;
+        UndoCreatureTopologyRuntimeState? runtimePayload = null;
         IReadOnlyList<CreatureRef> linkedRefs = [];
         switch (monster)
         {
@@ -147,7 +147,7 @@ internal static class UndoMonsterTopologyCodecRegistry
 
         Creature creature = monster.Creature;
         CreatureRole role = creature.PetOwner != null ? CreatureRole.Pet : CreatureRole.Enemy;
-        return new MonsterTopologyState
+        return new CreatureTopologyState
         {
             CreatureRef = new CreatureRef { Key = UndoStableRefs.BuildCreatureKey(creature, index) },
             Role = role,
@@ -175,7 +175,7 @@ internal static class UndoMonsterTopologyCodecRegistry
             yield return creatureRef;
     }
 
-    private static void RestoreCommonMonsterTopology(MonsterModel monster, MonsterTopologyState state)
+    private static void RestoreCommonMonsterTopology(MonsterModel monster, CreatureTopologyState state)
     {
         monster.Creature.SlotName = state.SlotName;
         MonsterMoveStateMachine? moveStateMachine = monster.MoveStateMachine;
@@ -189,7 +189,7 @@ internal static class UndoMonsterTopologyCodecRegistry
             monster.SetMoveImmediate(moveState, true);
     }
 
-    private static bool RestoreCodecState(MonsterModel monster, MonsterTopologyState state, IReadOnlyDictionary<string, Creature> creaturesByKey, UndoMonsterTopologyRestoreContext context)
+    private static bool RestoreCodecState(MonsterModel monster, CreatureTopologyState state, IReadOnlyDictionary<string, Creature> creaturesByKey, UndoCreatureTopologyRestoreContext context)
     {
         switch (state.RuntimePayload)
         {
@@ -215,7 +215,7 @@ internal static class UndoMonsterTopologyCodecRegistry
         }
     }
 
-    private static bool ValidateCreatureRole(Creature creature, MonsterTopologyState state, UndoMonsterTopologyRestoreContext context)
+    private static bool ValidateCreatureRole(Creature creature, CreatureTopologyState state, UndoCreatureTopologyRestoreContext context)
     {
         return state.Role switch
         {
@@ -225,7 +225,7 @@ internal static class UndoMonsterTopologyCodecRegistry
         };
     }
 
-    private static bool ValidatePetTopology(Creature creature, MonsterTopologyState state, UndoMonsterTopologyRestoreContext context)
+    private static bool ValidatePetTopology(Creature creature, CreatureTopologyState state, UndoCreatureTopologyRestoreContext context)
     {
         if (state.PetOwnerPlayerNetId is not ulong ownerNetId)
             return false;
@@ -245,4 +245,5 @@ internal static class UndoMonsterTopologyCodecRegistry
             .FirstOrDefault(player => player?.NetId == ownerNetId);
     }
 }
+
 
