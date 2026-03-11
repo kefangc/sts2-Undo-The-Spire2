@@ -27,6 +27,8 @@ internal sealed class UndoCardRuntimeState
 
     public bool ExhaustOnNextPlay { get; init; }
 
+    public CardRef? DeckVersionRef { get; init; }
+
     public UndoEnchantmentRuntimeState? EnchantmentState { get; init; }
 
     public IReadOnlyList<UndoComplexRuntimeState> ComplexStates { get; init; } = [];

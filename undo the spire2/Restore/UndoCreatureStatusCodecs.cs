@@ -107,6 +107,7 @@ internal static class UndoCreatureStatusCodecRegistry
         new CeremonialBeastStunnedCodec(),
         new CeremonialBeastInMidChargeCodec(),
         new WrigglerStartStunnedCodec(),
+        new CorpseSlugRavenousCodec(),
         new ThievingHopperHoveringCodec(),
         new OwlMagistrateFlyingCodec(),
         new QueenHasAmalgamDiedCodec()
@@ -236,6 +237,13 @@ internal static class UndoCreatureStatusCodecRegistry
         protected override string PropertyName => "StartStunned";
     }
 
+    private sealed class CorpseSlugRavenousCodec : UndoCreatureStatusBoolCodec<CorpseSlug>
+    {
+        public override string CodecId => "status:CorpseSlug.IsRavenous";
+
+        protected override string PropertyName => "IsRavenous";
+    }
+
     private sealed class ThievingHopperHoveringCodec : UndoCreatureStatusBoolCodec<ThievingHopper>
     {
         public override string CodecId => "status:ThievingHopper.IsHovering";
@@ -257,4 +265,3 @@ internal static class UndoCreatureStatusCodecRegistry
         protected override string PropertyName => "HasAmalgamDied";
     }
 }
-

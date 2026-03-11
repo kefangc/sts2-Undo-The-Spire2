@@ -357,6 +357,15 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void NormalizeThievingHopper(ThievingHopper monster, NCreature creatureNode)
     {
+        Node2D? spineBoneNode = creatureNode.GetSpecialNode<Node2D>("Visuals/SpineBoneNode");
+        if (spineBoneNode != null)
+            spineBoneNode.Position = Vector2.Zero;
+
+        Marker2D? stolenCardPos = creatureNode.GetNodeOrNull<Marker2D>("%StolenCardPos");
+        bool isHoldingCard = monster.Creature.Powers.OfType<SwipePower>().Any(static power => power.StolenCard != null);
+        if (!isHoldingCard && stolenCardPos != null)
+            ClearNodeChildren(stolenCardPos);
+
         bool isHovering = ReadBoolMonsterProperty(monster, "IsHovering");
         if (isHovering)
         {
@@ -365,8 +374,14 @@ internal static class UndoSpecialCreatureVisualNormalizer
             return;
         }
 
-        creatureNode.SetAnimationTrigger("StunTrigger");
+        creatureNode.SetAnimationTrigger("Idle");
         EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
+    }
+
+    private static void ClearNodeChildren(Node parent)
+    {
+        foreach (Node child in parent.GetChildren())
+            child.QueueFree();
     }
 
     private static void NormalizeGremlinAwakeState(NCreature creatureNode, bool isAwake)

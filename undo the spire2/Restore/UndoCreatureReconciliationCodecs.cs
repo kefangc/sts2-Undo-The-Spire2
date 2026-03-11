@@ -34,6 +34,7 @@ internal static class UndoCreatureReconciliationCodecRegistry
         new TunnelerReconciliationCodec(),
         new CeremonialBeastReconciliationCodec(),
         new WrigglerReconciliationCodec(),
+        new CorpseSlugReconciliationCodec(),
         new GenericTransientStunReconciliationCodec()
     ];
 
@@ -85,6 +86,12 @@ internal static class UndoCreatureReconciliationCodecRegistry
 
         monster.Creature.StunInternal(static _ => Task.CompletedTask, state.TransientNextMoveFollowUpId);
         return true;
+    }
+
+    private static Task InvokePrivateTaskMethod(object instance, string methodName, IReadOnlyList<Creature> targets)
+    {
+        return UndoReflectionUtil.FindMethod(instance.GetType(), methodName)?.Invoke(instance, [targets]) as Task
+            ?? Task.CompletedTask;
     }
 
     private static bool TrySetMove(MonsterModel monster, string? moveId)
@@ -425,6 +432,33 @@ internal static class UndoCreatureReconciliationCodecRegistry
             Wriggler wriggler = (Wriggler)monster;
             if (wriggler.StartStunned && state?.NextMoveId == "SPAWNED_MOVE")
                 TrySetMove(wriggler, "SPAWNED_MOVE");
+        }
+    }
+
+    private sealed class CorpseSlugReconciliationCodec : IUndoCreatureReconciliationCodec
+    {
+        public string CodecId => "reconcile:CorpseSlug.RavenousStun";
+
+        public bool CanHandle(MonsterModel monster)
+        {
+            return monster is CorpseSlug;
+        }
+
+        public void Reconcile(MonsterModel monster, UndoMonsterState? state)
+        {
+            CorpseSlug corpseSlug = (CorpseSlug)monster;
+            if (state?.NextMoveId != MonsterModel.stunnedMoveId)
+                return;
+
+            if (corpseSlug.Creature.GetPower<RavenousPower>() is not RavenousPower ravenousPower)
+            {
+                TryRestoreTransientStunnedMove(corpseSlug, state);
+                return;
+            }
+
+            corpseSlug.Creature.StunInternal(
+                targets => InvokePrivateTaskMethod(ravenousPower, "StunnedMove", targets),
+                state.TransientNextMoveFollowUpId);
         }
     }
 

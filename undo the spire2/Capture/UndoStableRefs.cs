@@ -83,7 +83,8 @@ internal static class UndoStableRefs
         PileType.Draw,
         PileType.Discard,
         PileType.Exhaust,
-        PileType.Play
+        PileType.Play,
+        PileType.Deck
     ];
 
     public static string BuildCreatureKey(Creature creature, int index)

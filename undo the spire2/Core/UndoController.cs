@@ -22,6 +22,7 @@ using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Models.Orbs;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Replay;
@@ -31,6 +32,7 @@ using MegaCrit.Sts2.Core.Nodes.Audio;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.Orbs;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
@@ -686,8 +688,8 @@ public sealed class UndoController
             source.AddFirst(snapshot);
             for (int i = skippedRedoSnapshots.Count - 1; i >= 0; i--)
                 source.AddFirst(skippedRedoSnapshots[i]);
-            WriteInteractionLog("restore_noop", $"operation={operation} reason={_lastRestoreFailureReason ?? ex.Message}");
-            MainFile.Logger.Error($"Failed to {operation}: {ex}");
+            string failure = _lastRestoreFailureReason ?? DescribeException(ex);
+            MainFile.Logger.Error($"Failed to {operation}: {failure}");
         }
         finally
         {
@@ -2474,7 +2476,8 @@ public sealed class UndoController
                 return false;
             }
             ResetActionExecutorForRestore();
-            if (!RestoreActionSynchronizationState(snapshot.SynchronizerCombatState, snapshot.ActionKernelState.BoundaryKind, out reason))
+            ActionSynchronizerCombatState effectiveSynchronizerState = GetEffectiveSynchronizerState(snapshot);
+            if (!RestoreActionSynchronizationState(effectiveSynchronizerState, snapshot.ActionKernelState.BoundaryKind, out reason))
             {
                 _lastRestoreFailureReason = reason;
                 _lastRestoreCapabilityReport = new RestoreCapabilityReport
@@ -2509,8 +2512,8 @@ public sealed class UndoController
         }
         catch (Exception ex)
         {
-            _lastRestoreFailureReason = ex.GetType().Name + ": " + ex.Message;
-            MainFile.Logger.Warn($"Full-state restore failed. {ex}");
+            _lastRestoreFailureReason = DescribeException(ex);
+            MainFile.Logger.Warn($"Full-state restore failed. {DescribeException(ex)}");
             return false;
         }
         finally
@@ -3278,7 +3281,45 @@ public sealed class UndoController
             CaptureFirstInSeriesPlayCounts(combatState),
             creatureTopologyStates: UndoCreatureTopologyCodecRegistry.Capture(combatState.Creatures),
             creatureStatusRuntimeStates: UndoCreatureStatusCodecRegistry.Capture(combatState.Creatures),
-            combatCardDbState: CaptureCombatCardDbState(runState));
+            combatCardDbState: CaptureCombatCardDbState(runState),
+            playerOrbStates: CapturePlayerOrbStates(runState),
+            playerDeckStates: CapturePlayerDeckStates(runState));
+    }
+
+    private static IReadOnlyList<UndoPlayerOrbState> CapturePlayerOrbStates(RunState runState)
+    {
+        return [.. runState.Players.Select(player => new UndoPlayerOrbState
+        {
+            PlayerNetId = player.NetId,
+            BaseOrbSlotCount = player.BaseOrbSlotCount,
+            Capacity = player.PlayerCombatState?.OrbQueue.Capacity ?? player.BaseOrbSlotCount,
+            Orbs = player.PlayerCombatState == null
+                ? []
+                : [.. player.PlayerCombatState.OrbQueue.Orbs.Select(CaptureOrbRuntimeState)]
+        })];
+    }
+
+    private static UndoOrbRuntimeState CaptureOrbRuntimeState(OrbModel orb)
+    {
+        return new UndoOrbRuntimeState
+        {
+            OrbId = orb.Id,
+            DarkEvokeValue = orb is DarkOrb darkOrb && FindField(darkOrb.GetType(), "_evokeVal")?.GetValue(darkOrb) is decimal darkEvokeValue
+                ? darkEvokeValue
+                : null,
+            GlassPassiveValue = orb is GlassOrb glassOrb && FindField(glassOrb.GetType(), "_passiveVal")?.GetValue(glassOrb) is decimal glassPassiveValue
+                ? glassPassiveValue
+                : null
+        };
+    }
+
+    private static IReadOnlyList<UndoPlayerDeckState> CapturePlayerDeckStates(RunState runState)
+    {
+        return [.. runState.Players.Select(player => new UndoPlayerDeckState
+        {
+            PlayerNetId = player.NetId,
+            Cards = [.. player.Deck.Cards.Select(card => ClonePacketSerializable(card.ToSerializable()))]
+        })];
     }
 
     private static IReadOnlyList<UndoMonsterState> CaptureMonsterStates(IReadOnlyList<Creature> creatures)
@@ -3454,17 +3495,20 @@ public sealed class UndoController
         UndoEnchantmentRuntimeState? enchantmentState,
         IReadOnlyList<UndoComplexRuntimeState> complexStates)
     {
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
         return new UndoCardRuntimeState
         {
             BaseReplayCount = card.BaseReplayCount,
             HasSingleTurnRetain = FindProperty(card.GetType(), "HasSingleTurnRetain")?.GetValue(card) is bool retain && retain,
             HasSingleTurnSly = FindProperty(card.GetType(), "HasSingleTurnSly")?.GetValue(card) is bool sly && sly,
             ExhaustOnNextPlay = card.ExhaustOnNextPlay,
+            DeckVersionRef = runState != null && card.DeckVersion != null
+                ? UndoStableRefs.CaptureCardRef(runState, card.DeckVersion)
+                : null,
             EnchantmentState = enchantmentState,
             ComplexStates = complexStates
         };
     }
-
     private static UndoEnchantmentRuntimeState? CaptureEnchantmentRuntimeState(EnchantmentModel? enchantment)
     {
         if (enchantment == null)
@@ -3635,7 +3679,7 @@ public sealed class UndoController
     {
         HashSet<string> excluded = [.. excludedNames];
         return GetRuntimeStateProperties(model.GetType())
-            .Where(property => property.PropertyType == typeof(bool) && !excluded.Contains(property.Name))
+            .Where(property => property.PropertyType == typeof(bool) && !ShouldSkipRuntimeStateProperty(model.GetType(), property.Name, excluded))
             .Select(property => new UndoNamedBoolState
             {
                 Name = property.Name,
@@ -3648,7 +3692,7 @@ public sealed class UndoController
     {
         HashSet<string> excluded = [.. excludedNames];
         return GetRuntimeStateProperties(model.GetType())
-            .Where(property => property.PropertyType == typeof(int) && !excluded.Contains(property.Name))
+            .Where(property => property.PropertyType == typeof(int) && !ShouldSkipRuntimeStateProperty(model.GetType(), property.Name, excluded))
             .Select(property => new UndoNamedIntState
             {
                 Name = property.Name,
@@ -3661,7 +3705,7 @@ public sealed class UndoController
     {
         HashSet<string> excluded = [.. excludedNames];
         return GetRuntimeStateProperties(model.GetType())
-            .Where(property => property.PropertyType.IsEnum && !excluded.Contains(property.Name))
+            .Where(property => property.PropertyType.IsEnum && !ShouldSkipRuntimeStateProperty(model.GetType(), property.Name, excluded))
             .Select(property => new UndoNamedEnumState
             {
                 Name = property.Name,
@@ -3669,6 +3713,17 @@ public sealed class UndoController
                 Value = Convert.ToInt32(property.GetValue(model))
             })
             .ToList();
+    }
+
+    private static bool ShouldSkipRuntimeStateProperty(Type type, string propertyName, IReadOnlySet<string>? excludedNames = null)
+    {
+        if (excludedNames?.Contains(propertyName) == true)
+            return true;
+
+        if (propertyName.StartsWith("Test", StringComparison.Ordinal))
+            return true;
+
+        return type == typeof(ConfusedPower) && propertyName == "TestEnergyCostOverride";
     }
 
     private static IEnumerable<PropertyInfo> GetRuntimeStateProperties(Type type)
@@ -3750,22 +3805,47 @@ public sealed class UndoController
         {
             Player player = runState.GetPlayer(playerState.playerId)
                 ?? throw new InvalidOperationException($"Could not map player snapshot {playerState.playerId}.");
+            UndoPlayerOrbState? playerOrbState = GetPlayerOrbState(snapshotState, player.NetId);
 
             player.PlayerRng.LoadFromSerializable(playerState.rngSet);
             player.PlayerOdds.LoadFromSerializable(playerState.oddsSet);
             player.RelicGrabBag.LoadFromSerializable(playerState.relicGrabBag);
             player.Gold = playerState.gold;
+            if (playerOrbState != null)
+                player.BaseOrbSlotCount = playerOrbState.BaseOrbSlotCount;
 
             RestoreRelics(runState, combatState, player, playerState, GetRelicRuntimeStatesForPlayer(snapshotState, player.NetId));
             RestorePotions(player, playerState);
+            RestorePlayerDeck(runState, player, GetPlayerDeckState(snapshotState, player.NetId));
             RestorePlayerCombatState(
                 player,
                 runState,
                 combatState,
                 playerState,
                 GetCardCostStatesForPlayer(snapshotState, player.NetId),
-                GetCardRuntimeStatesForPlayer(snapshotState, player.NetId));
+                GetCardRuntimeStatesForPlayer(snapshotState, player.NetId),
+                playerOrbState);
         }
+    }
+
+    private static void RestorePlayerDeck(RunState runState, Player player, UndoPlayerDeckState? deckState)
+    {
+        if (deckState == null)
+            return;
+
+        foreach (CardModel card in player.Deck.Cards.ToList())
+        {
+            card.RemoveFromCurrentPile();
+            card.RemoveFromState();
+        }
+
+        foreach (SerializableCard serializableCard in deckState.Cards)
+        {
+            CardModel deckCard = runState.LoadCard(ClonePacketSerializable(serializableCard), player);
+            player.Deck.AddInternal(deckCard, -1, true);
+        }
+
+        player.Deck.InvokeContentsChanged();
     }
 
     private static void RestoreRelics(RunState runState, CombatState combatState, Player player, NetFullCombatState.PlayerState playerState, IReadOnlyList<UndoRelicRuntimeState>? relicRuntimeStates)
@@ -3826,6 +3906,9 @@ public sealed class UndoController
     {
         foreach (UndoNamedBoolState state in states)
         {
+            if (ShouldSkipRuntimeStateProperty(target.GetType(), state.Name))
+                continue;
+
             PropertyInfo? property = FindProperty(target.GetType(), state.Name);
             if (property != null && property.PropertyType == typeof(bool))
             {
@@ -3843,6 +3926,9 @@ public sealed class UndoController
     {
         foreach (UndoNamedIntState state in states)
         {
+            if (ShouldSkipRuntimeStateProperty(target.GetType(), state.Name))
+                continue;
+
             PropertyInfo? property = FindProperty(target.GetType(), state.Name);
             if (property != null && property.PropertyType == typeof(int))
             {
@@ -3860,6 +3946,9 @@ public sealed class UndoController
     {
         foreach (UndoNamedEnumState state in states)
         {
+            if (ShouldSkipRuntimeStateProperty(target.GetType(), state.Name))
+                continue;
+
             PropertyInfo? property = FindProperty(target.GetType(), state.Name);
             if (property == null || !property.PropertyType.IsEnum)
                 continue;
@@ -3908,7 +3997,8 @@ public sealed class UndoController
         CombatState combatState,
         NetFullCombatState.PlayerState playerState,
         IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardCostState>>? cardCostStatesByPile,
-        IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? cardRuntimeStatesByPile)
+        IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? cardRuntimeStatesByPile,
+        UndoPlayerOrbState? playerOrbState)
     {
         PlayerCombatState playerCombatState = player.PlayerCombatState
             ?? throw new InvalidOperationException($"Player {player.NetId} has no combat state.");
@@ -3956,7 +4046,7 @@ public sealed class UndoController
 
         playerCombatState.Energy = playerState.energy;
         playerCombatState.Stars = playerState.stars;
-        RestoreOrbQueue(player, playerState);
+        RestoreOrbQueue(player, playerState, playerOrbState);
         playerCombatState.RecalculateCardValues();
     }
 
@@ -4002,6 +4092,16 @@ public sealed class UndoController
         return states.Count == 0 ? null : states;
     }
 
+    private static UndoPlayerOrbState? GetPlayerOrbState(UndoCombatFullState snapshotState, ulong playerNetId)
+    {
+        return snapshotState.PlayerOrbStates.FirstOrDefault(state => state.PlayerNetId == playerNetId);
+    }
+
+    private static UndoPlayerDeckState? GetPlayerDeckState(UndoCombatFullState snapshotState, ulong playerNetId)
+    {
+        return snapshotState.PlayerDeckStates.FirstOrDefault(state => state.PlayerNetId == playerNetId);
+    }
+
     private static IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? GetCardRuntimeStatesForPlayer(UndoCombatFullState snapshotState, ulong playerNetId)
     {
         Dictionary<PileType, IReadOnlyList<UndoCardRuntimeState>> states = snapshotState.CardRuntimeStates
@@ -4033,6 +4133,9 @@ public sealed class UndoController
         if (!TrySetPrivateAutoPropertyBackingField(card, "HasSingleTurnSly", runtimeState.HasSingleTurnSly))
             SetPrivatePropertyValue(card, "HasSingleTurnSly", runtimeState.HasSingleTurnSly);
         card.ExhaustOnNextPlay = runtimeState.ExhaustOnNextPlay;
+        card.DeckVersion = runtimeState.DeckVersionRef == null
+            ? null
+            : UndoStableRefs.ResolveCardRef(runState, runtimeState.DeckVersionRef);
         RestoreEnchantmentRuntimeState(card, runtimeState.EnchantmentState);
 
         UndoRuntimeRestoreContext context = new()
@@ -4117,18 +4220,32 @@ public sealed class UndoController
             starCostChanged();
     }
 
-    private static void RestoreOrbQueue(Player player, NetFullCombatState.PlayerState playerState)
+    private static void RestoreOrbQueue(Player player, NetFullCombatState.PlayerState playerState, UndoPlayerOrbState? playerOrbState)
     {
         OrbQueue orbQueue = player.PlayerCombatState!.OrbQueue;
         orbQueue.Clear();
-        orbQueue.AddCapacity(Math.Max(player.BaseOrbSlotCount, playerState.orbs.Count));
+        int desiredCapacity = playerOrbState?.Capacity ?? Math.Max(player.BaseOrbSlotCount, playerState.orbs.Count);
+        orbQueue.AddCapacity(desiredCapacity);
 
         for (int i = 0; i < playerState.orbs.Count; i++)
         {
             OrbModel orb = ModelDb.GetById<OrbModel>(playerState.orbs[i].id).ToMutable();
             orb.Owner = player;
             orbQueue.Insert(i, orb);
+            RestoreOrbRuntimeState(orb, playerOrbState != null && i < playerOrbState.Orbs.Count ? playerOrbState.Orbs[i] : null);
         }
+    }
+
+    private static void RestoreOrbRuntimeState(OrbModel orb, UndoOrbRuntimeState? runtimeState)
+    {
+        if (runtimeState == null || runtimeState.OrbId != orb.Id)
+            return;
+
+        if (orb is DarkOrb && runtimeState.DarkEvokeValue is decimal darkEvokeValue)
+            SetPrivateFieldValue(orb, "_evokeVal", darkEvokeValue);
+
+        if (orb is GlassOrb && runtimeState.GlassPassiveValue is decimal glassPassiveValue)
+            SetPrivateFieldValue(orb, "_passiveVal", glassPassiveValue);
     }
 
     private static void ResetActionExecutorForRestore()
@@ -4139,6 +4256,18 @@ public sealed class UndoController
         UndoReflectionUtil.TrySetPropertyValue(actionExecutor, "CurrentlyRunningAction", null);
         UndoReflectionUtil.TrySetFieldValue(actionExecutor, "_actionCancelToken", null);
         UndoReflectionUtil.TrySetFieldValue(actionExecutor, "_queueTaskCompletionSource", null);
+    }
+
+    private static ActionSynchronizerCombatState GetEffectiveSynchronizerState(UndoCombatFullState snapshot)
+    {
+        if (snapshot.ActionKernelState.BoundaryKind == ActionKernelBoundaryKind.StableBoundary
+            && snapshot.CurrentSide == CombatSide.Player
+            && snapshot.SynchronizerCombatState == ActionSynchronizerCombatState.NotPlayPhase)
+        {
+            return ActionSynchronizerCombatState.PlayPhase;
+        }
+
+        return snapshot.SynchronizerCombatState;
     }
 
     private static bool RestoreActionSynchronizationState(
@@ -4465,7 +4594,7 @@ public sealed class UndoController
             return false;
         }
 
-        if (RunManager.Instance.ActionQueueSynchronizer.CombatState != snapshot.SynchronizerCombatState)
+        if (RunManager.Instance.ActionQueueSynchronizer.CombatState != GetEffectiveSynchronizerState(snapshot))
         {
             reason = "synchronizer_state_mismatch";
             return false;
@@ -4700,16 +4829,19 @@ public sealed class UndoController
             existingPet ??= CreateSnapshotCreature(combatState, monsterId, owner.Creature.Side, desiredSlot);
             existingPet.SlotName = desiredSlot;
             EnsurePetOwnership(owner, existingPet);
-            return existingPet;
+                        return existingPet;
         }
 
         Creature? existingEnemy = currentEnemies.FirstOrDefault(creature =>
             !usedEnemies.Contains(creature)
             && creature.Monster?.Id == monsterId
             && string.Equals(creature.SlotName, desiredSlot, StringComparison.Ordinal));
-        existingEnemy ??= currentEnemies.FirstOrDefault(creature =>
-            !usedEnemies.Contains(creature)
-            && creature.Monster?.Id == monsterId);
+        if (existingEnemy == null && string.IsNullOrWhiteSpace(desiredSlot))
+        {
+            existingEnemy = currentEnemies.FirstOrDefault(creature =>
+                !usedEnemies.Contains(creature)
+                && creature.Monster?.Id == monsterId);
+        }
         existingEnemy ??= CreateSnapshotCreature(combatState, monsterId, CombatSide.Enemy, desiredSlot);
         existingEnemy.SlotName = desiredSlot;
         return existingEnemy;
@@ -4938,6 +5070,7 @@ public sealed class UndoController
         ClearTransientCardVisuals();
         NormalizeCombatInteractionState(combatState);
         RebuildCombatCreatureNodesIfNeeded(combatState);
+        RefreshPlayerOrbManagers(combatState);
         RestoreThievingHopperDisplayCards(combatState);
         RebuildCombatUiCards(combatState);
         NCombatRoom? combatRoom = NCombatRoom.Instance;
@@ -4977,6 +5110,114 @@ public sealed class UndoController
         NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoRefreshCombatUiAsync"]);
     }
 
+    private static void RefreshPlayerOrbManagers(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        foreach (Player player in combatState.Players)
+        {
+            if (player.PlayerCombatState == null)
+                continue;
+
+            NOrbManager? orbManager = combatRoom.GetCreatureNode(player.Creature)?.OrbManager;
+            if (orbManager == null)
+                continue;
+
+            RebuildOrbManagerNodes(orbManager, player.PlayerCombatState.OrbQueue);
+        }
+    }
+
+    private static void RebuildOrbManagerNodes(NOrbManager orbManager, OrbQueue orbQueue)
+    {
+        Control? orbContainer = GetPrivateFieldValue<Control>(orbManager, "_orbContainer");
+        System.Collections.IList? orbNodes = GetPrivateFieldValue<System.Collections.IList>(orbManager, "_orbs");
+        if (orbContainer == null || orbNodes == null)
+            return;
+
+        if (OrbManagerMatchesState(orbNodes, orbQueue))
+        {
+            orbManager.UpdateVisuals(OrbEvokeType.None);
+            return;
+        }
+
+        GetPrivateFieldValue<Tween>(orbManager, "_curTween")?.Kill();
+        SetPrivateFieldValue(orbManager, "_curTween", null);
+        ClearNodeChildren(orbContainer);
+        orbNodes.Clear();
+
+        for (int i = 0; i < orbQueue.Capacity; i++)
+        {
+            NOrb orbNode = NOrb.Create(orbManager.IsLocal);
+            orbContainer.AddChildSafely(orbNode);
+            orbNodes.Add(orbNode);
+            orbNode.Position = Vector2.Zero;
+        }
+
+        for (int i = 0; i < orbQueue.Orbs.Count; i++)
+        {
+            if (orbNodes[i] is not NOrb orbNode)
+                continue;
+
+            orbNode.ReplaceOrb(orbQueue.Orbs[i]);
+            FinalizeOrbNodeVisuals(orbNode);
+        }
+
+        LayoutOrbManagerNodesInstantly(orbManager, orbNodes, orbQueue.Capacity);
+        InvokePrivateMethod(orbManager, "UpdateControllerNavigation");
+        orbManager.UpdateVisuals(OrbEvokeType.None);
+    }
+
+    private static void LayoutOrbManagerNodesInstantly(NOrbManager orbManager, System.Collections.IList orbNodes, int capacity)
+    {
+        if (capacity <= 0)
+            return;
+
+        float spread = 125f;
+        float step = capacity > 1 ? spread / (capacity - 1) : 0f;
+        float radius = Mathf.Lerp(225f, 300f, (capacity - 3f) / 7f);
+        if (!orbManager.IsLocal)
+            radius *= 0.75f;
+
+        for (int i = 0; i < capacity; i++)
+        {
+            if (orbNodes[i] is not NOrb orbNode)
+                continue;
+
+            float angle = float.DegreesToRadians(-25f - spread);
+            orbNode.Position = new Vector2(-Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
+            spread -= step;
+        }
+    }
+
+    private static void FinalizeOrbNodeVisuals(NOrb orbNode)
+    {
+        GetPrivateFieldValue<Tween>(orbNode, "_curTween")?.Kill();
+        SetPrivateFieldValue(orbNode, "_curTween", null);
+        if (GetPrivateFieldValue<Node2D>(orbNode, "_sprite") is Node2D sprite)
+            sprite.Scale = Vector2.One;
+    }
+
+    private static bool OrbManagerMatchesState(System.Collections.IList orbNodes, OrbQueue orbQueue)
+    {
+        if (orbNodes.Count != orbQueue.Capacity)
+            return false;
+
+        for (int i = 0; i < orbQueue.Orbs.Count; i++)
+        {
+            if (orbNodes[i] is not NOrb orbNode || !ReferenceEquals(orbNode.Model, orbQueue.Orbs[i]))
+                return false;
+        }
+
+        for (int i = orbQueue.Orbs.Count; i < orbNodes.Count; i++)
+        {
+            if (orbNodes[i] is not NOrb orbNode || orbNode.Model != null)
+                return false;
+        }
+
+        return true;
+    }
 
     private static void RestoreThievingHopperDisplayCards(CombatState combatState)
     {
@@ -5540,11 +5781,14 @@ public sealed class UndoController
             return;
         }
 
-        property?.SetValue(instance, value);
+                property?.SetValue(instance, value);
     }
 
     private static bool TrySetRuntimePropertyValue(object instance, PropertyInfo property, string propertyName, object? value)
     {
+        if (ShouldSkipRuntimeStateProperty(instance.GetType(), propertyName))
+            return false;
+
         if (TrySetPrivateAutoPropertyBackingField(instance, propertyName, value))
             return true;
 
@@ -5569,6 +5813,19 @@ public sealed class UndoController
     private static object? InvokePrivateMethod(object instance, string methodName, params object?[]? args)
     {
         return FindMethod(instance.GetType(), methodName)?.Invoke(instance, args);
+    }
+
+    private static string DescribeException(Exception ex)
+    {
+        List<string> parts = [];
+        Exception? current = ex;
+        while (current != null)
+        {
+            parts.Add($"{current.GetType().Name}: {current.Message}");
+            current = current.InnerException;
+        }
+
+        return string.Join(" | ", parts);
     }
 
     private static FieldInfo? FindField(Type? type, string name)
@@ -5650,6 +5907,8 @@ public sealed class UndoController
             source.CreatureTopologyStates,
             source.CreatureStatusRuntimeStates,
             source.CombatCardDbState,
+            source.PlayerOrbStates,
+            source.PlayerDeckStates,
             source.SchemaVersion);
     }
 

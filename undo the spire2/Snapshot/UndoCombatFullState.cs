@@ -5,12 +5,14 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Saves.Runs;
 
 namespace UndoTheSpire2;
 
 internal sealed class UndoCombatFullState
 {
-    public const int CurrentSchemaVersion = 4;
+    public const int CurrentSchemaVersion = 6;
 
     public UndoCombatFullState(
         NetFullCombatState fullState,
@@ -34,6 +36,8 @@ internal sealed class UndoCombatFullState
         IReadOnlyList<CreatureTopologyState>? creatureTopologyStates = null,
         IReadOnlyList<CreatureStatusRuntimeState>? creatureStatusRuntimeStates = null,
         UndoCombatCardDbState? combatCardDbState = null,
+        IReadOnlyList<UndoPlayerOrbState>? playerOrbStates = null,
+        IReadOnlyList<UndoPlayerDeckState>? playerDeckStates = null,
         int schemaVersion = CurrentSchemaVersion)
     {
         SchemaVersion = schemaVersion;
@@ -50,6 +54,8 @@ internal sealed class UndoCombatFullState
         CreatureTopologyStates = creatureTopologyStates ?? [];
         CreatureStatusRuntimeStates = creatureStatusRuntimeStates ?? [];
         CombatCardDbState = combatCardDbState ?? new UndoCombatCardDbState();
+        PlayerOrbStates = playerOrbStates ?? [];
+        PlayerDeckStates = playerDeckStates ?? [];
         CardCostStates = cardCostStates;
         CardRuntimeStates = cardRuntimeStates ?? [];
         PowerRuntimeStates = powerRuntimeStates ?? [];
@@ -96,6 +102,10 @@ internal sealed class UndoCombatFullState
 
     public UndoCombatCardDbState CombatCardDbState { get; }
 
+    public IReadOnlyList<UndoPlayerOrbState> PlayerOrbStates { get; }
+
+    public IReadOnlyList<UndoPlayerDeckState> PlayerDeckStates { get; }
+
     public IReadOnlyList<UndoPlayerPileCardCostState> CardCostStates { get; }
 
     public IReadOnlyList<UndoPlayerPileCardRuntimeState> CardRuntimeStates { get; }
@@ -122,8 +132,29 @@ internal sealed class UndoPlayerPileCardCostState
     public required IReadOnlyList<UndoCardCostState> Cards { get; init; }
 }
 
+internal sealed class UndoPlayerOrbState
+{
+    public required ulong PlayerNetId { get; init; }
 
+    public required int BaseOrbSlotCount { get; init; }
 
+    public required int Capacity { get; init; }
 
+    public IReadOnlyList<UndoOrbRuntimeState> Orbs { get; init; } = [];
+}
 
+internal sealed class UndoOrbRuntimeState
+{
+    public required ModelId OrbId { get; init; }
 
+    public decimal? DarkEvokeValue { get; init; }
+
+    public decimal? GlassPassiveValue { get; init; }
+}
+
+internal sealed class UndoPlayerDeckState
+{
+    public required ulong PlayerNetId { get; init; }
+
+    public required IReadOnlyList<SerializableCard> Cards { get; init; }
+}
