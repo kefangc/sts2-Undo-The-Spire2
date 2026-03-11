@@ -1,11 +1,15 @@
 using System.Reflection;
+using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
+using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
 
 namespace UndoTheSpire2;
 
@@ -107,13 +111,20 @@ internal static class UndoCreatureTopologyCodecRegistry
         {
             case Door door:
                 runtimeCodecId = "topology:DoorAndDoormaker";
-                linkedRefs = [.. CaptureLinkedCreatureRef(creatures, door.Doormaker)];
+                Creature doormakerCreature = door.Doormaker;
+                bool doormakerInCombat = doormakerCreature.CombatState == door.Creature.CombatState
+                    && creatures.Contains(doormakerCreature);
+                linkedRefs = [.. CaptureLinkedCreatureRef(creatures, doormakerCreature)];
                 runtimePayload = new UndoDoorTopologyRuntimeState
                 {
                     CodecId = runtimeCodecId,
-                    DoormakerRef = UndoStableRefs.CaptureCreatureRef(creatures, door.Doormaker),
+                    DoormakerRef = UndoStableRefs.CaptureCreatureRef(creatures, doormakerCreature),
                     DeadStateFollowUpStateId = door.DeadState.FollowUpState?.Id,
-                    TimesGotBackIn = door.Doormaker.Monster is Doormaker doormaker ? doormaker.TimesGotBackIn : null
+                    TimesGotBackIn = doormakerCreature.Monster is Doormaker doormaker ? doormaker.TimesGotBackIn : null,
+                    IsDoorVisible = TryDeriveDoorVisibilityState(door.Creature.CombatState, doormakerCreature, isHalfDead),
+                    DormantDoormakerState = !doormakerInCombat
+                        ? CaptureDormantCreatureState(doormakerCreature)
+                        : null
                 };
                 break;
             case DecimillipedeSegment segment:
@@ -204,12 +215,18 @@ internal static class UndoCreatureTopologyCodecRegistry
                 if (doorState.DoormakerRef != null && !creaturesByKey.TryGetValue(doorState.DoormakerRef.Key, out doormakerCreature))
                     return false;
 
-                if (doorState.DoormakerRef != null)
-                    UndoReflectionUtil.TrySetPropertyValue(door, "Doormaker", doormakerCreature);
+                doormakerCreature ??= doorState.DormantDoormakerState == null
+                    ? TryGetDoorDoormaker(door)
+                    : RestoreDormantDoormaker(door, doorState.DormantDoormakerState);
+                if (doormakerCreature == null)
+                    return false;
+
+                UndoReflectionUtil.TrySetPropertyValue(door, "Doormaker", doormakerCreature);
                 if (door.DeadState != null && doorState.DeadStateFollowUpStateId != null && door.MoveStateMachine.States.TryGetValue(doorState.DeadStateFollowUpStateId, out MonsterState? followUpState) && followUpState is MoveState moveState)
                     door.DeadState.FollowUpState = moveState;
                 if (door.Doormaker.Monster is Doormaker doormaker && doorState.TimesGotBackIn.HasValue)
                     UndoReflectionUtil.TrySetPropertyValue(doormaker, "TimesGotBackIn", doorState.TimesGotBackIn.Value);
+                ApplyDoorVisibilityState(door, doorState.IsDoorVisible);
                 return true;
             case UndoDecimillipedeTopologyRuntimeState decimillipedeState when monster is DecimillipedeSegment segment:
                 segment.StarterMoveIdx = decimillipedeState.StarterMoveIdx;
@@ -253,6 +270,215 @@ internal static class UndoCreatureTopologyCodecRegistry
             .FirstOrDefault(player => player?.NetId == ownerNetId);
     }
 
+
+    private static UndoDormantCreatureState? CaptureDormantCreatureState(Creature creature)
+    {
+        if (creature.Monster == null)
+            return null;
+
+        return new UndoDormantCreatureState
+        {
+            CreatureState = CaptureCreatureState(creature),
+            MonsterState = CaptureDetachedMonsterState(creature)
+        };
+    }
+
+    private static NetFullCombatState.CreatureState CaptureCreatureState(Creature creature)
+    {
+        return new NetFullCombatState.CreatureState
+        {
+            monsterId = creature.Monster?.Id,
+            playerId = creature.Player?.NetId,
+            currentHp = creature.CurrentHp,
+            maxHp = creature.MaxHp,
+            block = creature.Block,
+            powers = [.. creature.Powers.Select(static power => new NetFullCombatState.PowerState
+            {
+                id = power.Id,
+                amount = power.Amount
+            })]
+        };
+    }
+
+    private static UndoMonsterState? CaptureDetachedMonsterState(Creature creature)
+    {
+        MonsterModel? monster = creature.Monster;
+        MonsterMoveStateMachine? moveStateMachine = monster?.MoveStateMachine;
+        if (moveStateMachine == null)
+            return null;
+
+        string? currentStateId = UndoReflectionUtil.FindField(moveStateMachine.GetType(), "_currentState")?.GetValue(moveStateMachine) as MonsterState is MonsterState currentState
+            ? currentState.Id
+            : null;
+        bool performedFirstMove = UndoReflectionUtil.FindField(moveStateMachine.GetType(), "_performedFirstMove")?.GetValue(moveStateMachine) is true;
+        bool nextMovePerformedAtLeastOnce = monster!.NextMove != null
+            && UndoReflectionUtil.FindField(monster.NextMove.GetType(), "_performedAtLeastOnce")?.GetValue(monster.NextMove) is true;
+        string? transientNextMoveFollowUpId = monster.NextMove?.Id == MonsterModel.stunnedMoveId
+            ? monster.NextMove.FollowUpState?.Id ?? monster.NextMove.FollowUpStateId
+            : null;
+
+        return new UndoMonsterState
+        {
+            CreatureKey = $"dormant:{monster.Id.Entry}",
+            SlotName = string.IsNullOrWhiteSpace(creature.SlotName) ? null : creature.SlotName,
+            CurrentStateId = currentStateId,
+            NextMoveId = monster.NextMove?.Id,
+            IsHovering = false,
+            SpawnedThisTurn = monster.SpawnedThisTurn,
+            PerformedFirstMove = performedFirstMove,
+            NextMovePerformedAtLeastOnce = nextMovePerformedAtLeastOnce,
+            TransientNextMoveFollowUpId = transientNextMoveFollowUpId,
+            SpecialNodeStateKey = null,
+            StateLogIds = [.. moveStateMachine.StateLog.Select(static state => state.Id)]
+        };
+    }
+
+    private static bool? TryDeriveDoorVisibilityState(CombatState? combatState, Creature? doormakerCreature, bool isHalfDead)
+    {
+        if (!isHalfDead)
+            return true;
+
+        bool doormakerInCombat = combatState != null
+            && doormakerCreature?.CombatState == combatState
+            && combatState.ContainsCreature(doormakerCreature);
+        return !doormakerInCombat;
+    }
+
+    private static void ApplyDoorVisibilityState(Door door, bool? isDoorVisible)
+    {
+        if (!isDoorVisible.HasValue)
+            return;
+
+        if (isDoorVisible.Value)
+            door.Close();
+        else
+            door.Open();
+    }
+
+    private static void RemoveCreatureNode(NCombatRoom? combatRoom, NCreature creatureNode)
+    {
+        if (combatRoom == null || !GodotObject.IsInstanceValid(creatureNode))
+            return;
+
+        MethodInfo? removeNodeMethod = UndoReflectionUtil.FindMethod(combatRoom.GetType(), "RemoveCreatureNode");
+        if (removeNodeMethod != null)
+        {
+            removeNodeMethod.Invoke(combatRoom, [creatureNode]);
+            return;
+        }
+
+        creatureNode.QueueFree();
+    }
+
+    private static Creature? TryGetDoorDoormaker(Door door)
+    {
+        return UndoReflectionUtil.FindProperty(door.GetType(), "Doormaker")?.GetValue(door) as Creature
+            ?? UndoReflectionUtil.FindField(door.GetType(), "_doormaker")?.GetValue(door) as Creature;
+    }
+
+    private static Creature? RestoreDormantDoormaker(Door door, UndoDormantCreatureState dormantState)
+    {
+        CombatState? combatState = door.Creature.CombatState;
+        if (combatState == null)
+            return null;
+
+        Creature? currentDoormaker = TryGetDoorDoormaker(door);
+        if (currentDoormaker?.CombatState == combatState)
+        {
+            NCombatRoom? combatRoom = NCombatRoom.Instance;
+            NCreature? currentNode = combatRoom?.GetCreatureNode(currentDoormaker);
+            if (currentNode != null)
+                RemoveCreatureNode(combatRoom, currentNode);
+
+            if (combatState.ContainsCreature(currentDoormaker))
+                combatState.RemoveCreature(currentDoormaker, unattach: false);
+            CombatManager.Instance.RemoveCreature(currentDoormaker);
+        }
+
+        MonsterModel monster = ModelDb.Monster<Doormaker>().ToMutable();
+        Creature doormaker = combatState.CreateCreature(monster, CombatSide.Enemy, dormantState.MonsterState?.SlotName ?? "doormaker");
+
+        if (dormantState.CreatureState != null)
+            RestoreSnapshotCreatureState(doormaker, dormantState.CreatureState.Value);
+        if (dormantState.MonsterState != null && doormaker.Monster != null)
+            RestoreDetachedMonsterState(doormaker.Monster, dormantState.MonsterState);
+        return doormaker;
+    }
+
+    private static void RestoreSnapshotCreatureState(Creature creature, NetFullCombatState.CreatureState saved)
+    {
+        creature.SetMaxHpInternal(saved.maxHp);
+        creature.SetCurrentHpInternal(saved.currentHp);
+        if (creature.Block < saved.block)
+            creature.GainBlockInternal(saved.block - creature.Block);
+        else if (creature.Block > saved.block)
+            creature.LoseBlockInternal(creature.Block - saved.block);
+
+        List<PowerModel> remainingCurrentPowers = creature.Powers.ToList();
+        foreach (NetFullCombatState.PowerState powerState in saved.powers)
+        {
+            PowerModel? existingPower = remainingCurrentPowers.FirstOrDefault(power => power.Id == powerState.id);
+            if (existingPower != null)
+            {
+                remainingCurrentPowers.Remove(existingPower);
+                existingPower.SetAmount(powerState.amount, true);
+                existingPower.AmountOnTurnStart = existingPower.Amount;
+                continue;
+            }
+
+            PowerModel power = ModelDb.GetById<PowerModel>(powerState.id).ToMutable();
+            power.ApplyInternal(creature, powerState.amount, true);
+            power.AmountOnTurnStart = power.Amount;
+        }
+
+        foreach (PowerModel power in remainingCurrentPowers)
+            power.RemoveInternal();
+    }
+
+    private static void RestoreDetachedMonsterState(MonsterModel monster, UndoMonsterState state)
+    {
+        MonsterMoveStateMachine? moveStateMachine = monster.MoveStateMachine;
+        if (moveStateMachine == null)
+            return;
+
+        monster.Creature.SlotName = state.SlotName;
+        UndoReflectionUtil.TrySetPropertyValue(monster, "SpawnedThisTurn", state.SpawnedThisTurn);
+        UndoReflectionUtil.TrySetFieldValue(moveStateMachine, "_performedFirstMove", state.PerformedFirstMove);
+        if (moveStateMachine.StateLog is List<MonsterState> stateLog)
+        {
+            stateLog.Clear();
+            foreach (string stateId in state.StateLogIds)
+            {
+                if (moveStateMachine.States.TryGetValue(stateId, out MonsterState? loggedState))
+                    stateLog.Add(loggedState);
+            }
+        }
+
+        if ((monster.Creature.IsDead || monster.Creature.GetPower<ReattachPower>() is ReattachPower reattachPower
+                && UndoReflectionUtil.FindProperty(reattachPower.GetType(), "IsReviving")?.GetValue(reattachPower) is bool isReviving
+                && isReviving)
+            && UndoReflectionUtil.FindProperty(monster.GetType(), "DeadState")?.GetValue(monster) is MoveState deadState)
+        {
+            monster.SetMoveImmediate(deadState, true);
+            moveStateMachine.ForceCurrentState(deadState);
+            UndoReflectionUtil.TrySetFieldValue(deadState, "_performedAtLeastOnce", state.NextMovePerformedAtLeastOnce);
+            return;
+        }
+
+        if (state.CurrentStateId != null && moveStateMachine.States.TryGetValue(state.CurrentStateId, out MonsterState? currentState))
+            moveStateMachine.ForceCurrentState(currentState);
+
+        if (state.NextMoveId == MonsterModel.stunnedMoveId)
+            return;
+
+        if (state.NextMoveId != null && moveStateMachine.States.TryGetValue(state.NextMoveId, out MonsterState? nextState) && nextState is MoveState moveState)
+        {
+            monster.SetMoveImmediate(moveState, true);
+            if (state.CurrentStateId == null)
+                moveStateMachine.ForceCurrentState(moveState);
+            UndoReflectionUtil.TrySetFieldValue(moveState, "_performedAtLeastOnce", state.NextMovePerformedAtLeastOnce);
+        }
+    }
 
     private static bool RestoreQueenTopology(Queen queen, UndoQueenTopologyRuntimeState state, IReadOnlyDictionary<string, Creature> creaturesByKey)
     {
@@ -300,3 +526,13 @@ internal static class UndoCreatureTopologyCodecRegistry
         return Delegate.CreateDelegate(typeof(Action<Creature>), queen, method, throwOnBindFailure: false) as Action<Creature>;
     }
 }
+
+
+
+
+
+
+
+
+
+

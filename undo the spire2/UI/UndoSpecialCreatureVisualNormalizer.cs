@@ -403,22 +403,56 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void NormalizeCreatureNodeVisibility(Creature creature, NCreature creatureNode)
     {
-        creatureNode.Visible = true;
+        bool nodeVisible = ShouldShowCreatureNode(creature);
+        creatureNode.Visible = nodeVisible;
         creatureNode.Modulate = Colors.White;
         if (creatureNode.Visuals != null)
         {
-            creatureNode.Visuals.Visible = true;
+            creatureNode.Visuals.Visible = nodeVisible;
             creatureNode.Visuals.Modulate = Colors.White;
         }
 
         if (creatureNode.Body != null)
         {
-            creatureNode.Body.Visible = true;
+            creatureNode.Body.Visible = nodeVisible;
             creatureNode.Body.Modulate = Colors.White;
         }
 
-        bool interactable = creature.Monster?.IsHealthBarVisible == true && !creature.IsDead;
+        bool interactable = nodeVisible && creature.Monster?.IsHealthBarVisible == true && !creature.IsDead;
         creatureNode.ToggleIsInteractable(interactable);
+        NormalizeStateDisplayVisibility(creatureNode, interactable);
+    }
+
+    private static bool ShouldShowCreatureNode(Creature creature)
+    {
+        if (creature.Monster is not Door door)
+            return creature.GetPower<DoorRevivalPower>()?.IsHalfDead != true;
+
+        bool isHalfDead = creature.GetPower<DoorRevivalPower>()?.IsHalfDead == true;
+        if (!isHalfDead)
+            return true;
+
+        Creature doormaker = door.Doormaker;
+        CombatState? combatState = creature.CombatState;
+        bool doormakerInCombat = combatState != null
+            && doormaker.CombatState == combatState
+            && combatState.ContainsCreature(doormaker);
+        return !doormakerInCombat;
+    }
+
+    private static void NormalizeStateDisplayVisibility(NCreature creatureNode, bool interactable)
+    {
+        object? stateDisplay = UndoReflectionUtil.FindField(creatureNode.GetType(), "_stateDisplay")?.GetValue(creatureNode);
+        if (stateDisplay is not Control stateDisplayControl || !GodotObject.IsInstanceValid(stateDisplayControl))
+            return;
+
+        bool visible = interactable && !NCombatUi.IsDebugHidingHpBar;
+        stateDisplayControl.Visible = visible;
+        Color modulate = stateDisplayControl.Modulate;
+        modulate.A = visible ? 1f : 0f;
+        stateDisplayControl.Modulate = modulate;
+        if (visible)
+            TryInvokePrivateMethod(stateDisplay, "RefreshValues");
     }
 
     private static void ApplyBoundsContainer(NCreature creatureNode, string boundsContainerName)
@@ -591,3 +625,6 @@ internal static class UndoSpecialCreatureVisualNormalizer
         return triggeredBlockLastTurn ? "BlockTrigger" : "SleepTrigger";
     }
 }
+
+
+

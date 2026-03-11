@@ -1186,7 +1186,8 @@ internal static class UndoScenarioExecutor
                 door.CodecId,
                 DoormakerRef = door.DoormakerRef?.Key,
                 door.DeadStateFollowUpStateId,
-                door.TimesGotBackIn
+                door.TimesGotBackIn,
+                door.IsDoorVisible
             },
             UndoDecimillipedeTopologyRuntimeState decimillipede => new
             {
@@ -1309,6 +1310,8 @@ internal static class UndoScenarioExecutor
         return required.Where(requiredId => !implemented.Contains(requiredId)).ToList();
     }
 }
+
+
 
 
 

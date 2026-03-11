@@ -1,5 +1,6 @@
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
 
 namespace UndoTheSpire2;
@@ -60,6 +61,17 @@ internal sealed class UndoDoorTopologyRuntimeState : UndoCreatureTopologyRuntime
     public string? DeadStateFollowUpStateId { get; init; }
 
     public int? TimesGotBackIn { get; init; }
+
+    public bool? IsDoorVisible { get; init; }
+
+    public UndoDormantCreatureState? DormantDoormakerState { get; init; }
+}
+
+internal sealed class UndoDormantCreatureState
+{
+    public NetFullCombatState.CreatureState? CreatureState { get; init; }
+
+    public UndoMonsterState? MonsterState { get; init; }
 }
 
 internal sealed class UndoDecimillipedeTopologyRuntimeState : UndoCreatureTopologyRuntimeState
@@ -88,4 +100,3 @@ internal sealed class UndoCreatureTopologyRestoreContext
 {
     public required IReadOnlyList<Creature> Creatures { get; init; }
 }
-
