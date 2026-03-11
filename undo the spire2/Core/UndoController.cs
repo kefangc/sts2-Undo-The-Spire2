@@ -588,6 +588,22 @@ public sealed class UndoController
         if (preferredTemplate?.ChoiceResultKey != null)
             return preferredTemplate;
 
+        if (preferredTemplate != null
+            && !preferredTemplate.IsChoiceAnchor
+            && _lastResolvedChoiceResultKey != null
+            && preferredTemplate.ReplayEventCount >= replayEventCount)
+        {
+            return new UndoSnapshot(
+                preferredTemplate.CombatState,
+                preferredTemplate.ReplayEventCount,
+                preferredTemplate.ActionKind,
+                preferredTemplate.SequenceId,
+                preferredTemplate.ActionLabel,
+                preferredTemplate.IsChoiceAnchor,
+                preferredTemplate.ChoiceSpec,
+                _lastResolvedChoiceResultKey);
+        }
+
         foreach (UndoSnapshot snapshot in _futureSnapshots)
         {
             if (!snapshot.IsChoiceAnchor && snapshot.ChoiceResultKey != null && snapshot.ReplayEventCount >= replayEventCount)
@@ -762,12 +778,24 @@ public sealed class UndoController
     private async Task<bool> TryRestorePrimaryChoiceAsync(UndoSnapshot snapshot, UndoSnapshot? branchSnapshot, bool stateAlreadyApplied = false)
     {
         PausedChoiceState? pausedChoiceState = snapshot.CombatState.ActionKernelState.PausedChoiceState;
-        if (pausedChoiceState?.ChoiceSpec == null)
+        UndoChoiceSpec? choiceSpec = pausedChoiceState?.ChoiceSpec
+            ?? (snapshot.IsChoiceAnchor ? snapshot.ChoiceSpec : null);
+        if (choiceSpec == null)
             return false;
 
-        RestoreCapabilityReport capability = UndoActionCodecRegistry.EvaluateCapability(pausedChoiceState);
-        if (capability.Result != RestoreCapabilityResult.Supported)
+        if (pausedChoiceState != null)
+        {
+            RestoreCapabilityReport capability = UndoActionCodecRegistry.EvaluateCapability(pausedChoiceState);
+            if (capability.Result != RestoreCapabilityResult.Supported)
+            {
+                UndoDebugLog.Write($"primary_choice_restore_capability:{capability.Result} replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} detail={capability.Detail ?? "none"}");
+                return false;
+            }
+        }
+        else if (choiceSpec.Kind != UndoChoiceKind.ChooseACard)
+        {
             return false;
+        }
 
         if (!stateAlreadyApplied && !await TryApplyFullStateInPlaceAsync(snapshot.CombatState))
             return false;
@@ -778,10 +806,45 @@ public sealed class UndoController
 
         await WaitOneFrameAsync();
 
+        UndoSyntheticChoiceSession primarySession = new(snapshot, choiceSpec);
+        if (branchSnapshot?.ChoiceResultKey != null)
+            primarySession.CachedBranches[branchSnapshot.ChoiceResultKey] = branchSnapshot;
+
+        if (choiceSpec.Kind == UndoChoiceKind.ChooseACard)
+        {
+            _syntheticChoiceSession = primarySession;
+            _lastResolvedChoiceSpec = choiceSpec;
+            _lastResolvedChoiceResultKey = null;
+            Task<UndoChoiceResultKey?> selectionTask = pausedChoiceState != null
+                ? UndoActionCodecRegistry.RestoreAsync(pausedChoiceState, runState)
+                : RestorePrimaryChooseACardAnchorAsync(choiceSpec, runState);
+            NCombatUi? combatUi = null;
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                await WaitOneFrameAsync();
+                combatUi = NCombatRoom.Instance?.Ui;
+                if (combatUi != null && IsSupportedChoiceUiActive(combatUi))
+                    break;
+            }
+
+            if (combatUi == null || !IsSupportedChoiceUiActive(combatUi))
+            {
+                _syntheticChoiceSession = null;
+                UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"} stage=anchor_reopen_failed");
+                return false;
+            }
+
+            WriteInteractionLog("primary_restore_anchor_reopened", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"}");
+            NotifyStateChanged();
+            TaskHelper.RunSafely(HandlePrimaryChooseACardSelectionAsync(primarySession, selectionTask));
+            return true;
+        }
+
         UndoChoiceResultKey? selectedKey;
+
         try
         {
-            selectedKey = await UndoActionCodecRegistry.RestoreAsync(pausedChoiceState, runState);
+            selectedKey = await UndoActionCodecRegistry.RestoreAsync(pausedChoiceState!, runState);
         }
         catch (TaskCanceledException)
         {
@@ -791,16 +854,11 @@ public sealed class UndoController
 
         if (selectedKey == null)
         {
-            UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState.SourceActionCodecId ?? "unknown"}");
+            UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"}");
             return false;
         }
 
-        UndoDebugLog.Write($"primary_choice_restore_selected_key:{selectedKey} replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState.SourceActionCodecId ?? "unknown"}");
-        UndoChoiceSpec choiceSpec = pausedChoiceState.ChoiceSpec;
-        UndoSyntheticChoiceSession primarySession = new(snapshot, choiceSpec);
-        if (branchSnapshot?.ChoiceResultKey != null)
-            primarySession.CachedBranches[branchSnapshot.ChoiceResultKey] = branchSnapshot;
-
+        UndoDebugLog.Write($"primary_choice_restore_selected_key:{selectedKey} replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"}");
         if (primarySession.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
         {
             if (!await TryApplySynthesizedChoiceBranchAsync(primarySession, cachedBranchSnapshot, selectedKey, vfxRequest: null))
@@ -817,6 +875,65 @@ public sealed class UndoController
         }
 
         return await TryApplySynthesizedChoiceBranchAsync(primarySession, synthesizedBranch!, selectedKey, vfxRequest: null);
+    }
+
+    private static async Task<UndoChoiceResultKey?> RestorePrimaryChooseACardAnchorAsync(UndoChoiceSpec choiceSpec, RunState runState)
+    {
+        Player? player = LocalContext.NetId is ulong localNetId
+            ? runState.GetPlayer(localNetId)
+            : runState.Players.FirstOrDefault();
+        if (player == null)
+            return null;
+
+        NChooseACardSelectionScreen screen = NChooseACardSelectionScreen.ShowScreen(choiceSpec.BuildOptionCards(player), choiceSpec.CanSkip);
+        CardModel? selected = (await screen.CardsSelected()).FirstOrDefault();
+        return choiceSpec.TryMapSyntheticSelection(player, selected == null ? [] : [selected]);
+    }
+    private async Task HandlePrimaryChooseACardSelectionAsync(UndoSyntheticChoiceSession session, Task<UndoChoiceResultKey?> selectionTask)
+    {
+        try
+        {
+            UndoChoiceResultKey? selectedKey = await selectionTask;
+            if (_syntheticChoiceSession != session)
+                return;
+
+            if (selectedKey == null)
+            {
+                UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel} codec={session.ChoiceSpec.Kind}");
+                _syntheticChoiceSession = null;
+                NotifyStateChanged();
+                return;
+            }
+
+            UndoDebugLog.Write($"primary_choice_restore_selected_key:{selectedKey} replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel} codec={session.ChoiceSpec.Kind}");
+            if (session.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
+            {
+                if (await TryApplySynthesizedChoiceBranchAsync(session, cachedBranchSnapshot, selectedKey, vfxRequest: null))
+                    WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=cached");
+                return;
+            }
+
+            UndoDebugLog.Write($"primary_choice_branch_miss:{selectedKey} replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel} cached={session.CachedBranches.Count}");
+            if (!TryCreateSyntheticChoiceBranchSnapshot(session, selectedKey, out UndoSnapshot? synthesizedBranch))
+            {
+                MainFile.Logger.Warn($"Could not synthesize primary branch for restored choice {selectedKey}.");
+                _syntheticChoiceSession = null;
+                NotifyStateChanged();
+                return;
+            }
+
+            if (await TryApplySynthesizedChoiceBranchAsync(session, synthesizedBranch!, selectedKey, vfxRequest: null))
+                WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=synthesized");
+        }
+        catch (TaskCanceledException)
+        {
+            if (_syntheticChoiceSession == session)
+            {
+                _syntheticChoiceSession = null;
+                UndoDebugLog.Write($"primary_choice_restore_selected_key:canceled replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel}");
+                NotifyStateChanged();
+            }
+        }
     }
 
     private async Task<bool> TryApplySynthesizedChoiceBranchAsync(
@@ -976,8 +1093,17 @@ public sealed class UndoController
         if (!TryGetComparablePlayerStates(anchorSnapshot.CombatState.FullState, fullState, out int playerIndex, out NetFullCombatState.PlayerState anchorPlayerState, out NetFullCombatState.PlayerState branchPlayerState))
             return false;
 
-        if (!TryFindGeneratedCombatCard(anchorPlayerState, branchPlayerState, out int pileIndex, out int cardIndex, out NetFullCombatState.CardState generatedCardState))
+        if (!TryFindGeneratedCombatCard(anchorPlayerState, branchPlayerState, out int pileIndex, out int cardIndex, out NetFullCombatState.CardState generatedCardState)
+            && !TryFindChooseACardTemplateSlot(
+                anchorPlayerState,
+                templateSnapshot.CombatState.FullState.Players[playerIndex],
+                choiceSpec.OptionCards[templateOptionIndex],
+                out pileIndex,
+                out cardIndex,
+                out generatedCardState))
+        {
             return false;
+        }
 
         NetFullCombatState.CombatPileState branchPileState = branchPlayerState.piles[pileIndex];
         if (selectedOptionIndex < 0)
@@ -991,7 +1117,7 @@ public sealed class UndoController
 
         branchPlayerState.piles[pileIndex] = branchPileState;
         fullState.Players[playerIndex] = branchPlayerState;
-        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, fullState);
+        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
         return true;
     }
 
@@ -1140,7 +1266,7 @@ public sealed class UndoController
 
         branchPlayerState.piles[branchSourcePileIndex] = branchSourcePileState;
         fullState.Players[playerIndex] = branchPlayerState;
-        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, fullState);
+        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
         return true;
     }
 
@@ -1440,7 +1566,7 @@ public sealed class UndoController
         }
 
         fullState.Players[playerIndex] = branchPlayerState;
-        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, fullState);
+        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
         return true;
     }
 
@@ -1510,7 +1636,7 @@ public sealed class UndoController
         }
 
         fullState.Players[playerIndex] = branchPlayerState;
-        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, fullState);
+        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
         return true;
     }
 
@@ -2014,6 +2140,47 @@ public sealed class UndoController
         return foundGeneratedCard;
     }
 
+    private static bool TryFindChooseACardTemplateSlot(
+        NetFullCombatState.PlayerState anchorPlayerState,
+        NetFullCombatState.PlayerState templatePlayerState,
+        SerializableCard templateOptionCard,
+        out int pileIndex,
+        out int cardIndex,
+        out NetFullCombatState.CardState generatedCardState)
+    {
+        pileIndex = -1;
+        cardIndex = -1;
+        generatedCardState = default;
+        bool foundGeneratedCard = false;
+
+        for (int i = 0; i < templatePlayerState.piles.Count; i++)
+        {
+            NetFullCombatState.CombatPileState templatePileState = templatePlayerState.piles[i];
+            int anchorPileIndex = FindPileIndex(anchorPlayerState.piles, templatePileState.pileType);
+            if (anchorPileIndex < 0)
+                return false;
+
+            NetFullCombatState.CombatPileState anchorPileState = anchorPlayerState.piles[anchorPileIndex];
+            List<int> unmatchedIndexes = FindUnmatchedCardIndexes(anchorPileState.cards, templatePileState.cards);
+            foreach (int unmatchedIndex in unmatchedIndexes)
+            {
+                SerializableCard templateCard = templatePileState.cards[unmatchedIndex].card;
+                if (!templateCard.Equals(templateOptionCard))
+                    continue;
+
+                if (foundGeneratedCard)
+                    return false;
+
+                foundGeneratedCard = true;
+                pileIndex = i;
+                cardIndex = unmatchedIndex;
+                generatedCardState = templatePileState.cards[unmatchedIndex];
+            }
+        }
+
+        return foundGeneratedCard;
+    }
+
     private static int FindPileIndex(IReadOnlyList<NetFullCombatState.CombatPileState> pileStates, PileType pileType)
     {
         for (int i = 0; i < pileStates.Count; i++)
@@ -2280,7 +2447,7 @@ public sealed class UndoController
                 };
                 return false;
             }
-            RebuildTransientCombatCaches(runState);
+            RebuildTransientCombatCaches(runState, snapshot.CombatCardDbState);
             NormalizeRelicInventoryUi(runState);
             ApplyFirstInSeriesPlayCountOverrides(snapshot);
 
@@ -2551,7 +2718,10 @@ public sealed class UndoController
             return true;
 
         GameAction? action = RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
-        return action != null && action.State == GameActionState.GatheringPlayerChoice;
+        if (action?.State == GameActionState.GatheringPlayerChoice)
+            return true;
+
+        return CanRestoreResolvedHookChoice(action);
     }
 
     private static bool IsSinglePlayerCombat()
@@ -2559,6 +2729,38 @@ public sealed class UndoController
         return RunManager.Instance.IsSinglePlayerOrFakeMultiplayer
             && CombatManager.Instance.IsInProgress
             && NGame.Instance?.CurrentRunNode != null;
+    }
+
+    // Combat-start choose-a-card effects like Toolbox resolve inside a hook
+    // action after the player has already picked a branch. Allow undo to
+    // restore that choice anchor even before the hook fully drains.
+    private bool CanRestoreResolvedHookChoice(GameAction? action)
+    {
+        if (action is not GenericHookGameAction)
+            return false;
+
+        if (_lastResolvedChoiceResultKey == null)
+            return false;
+
+        if (_pastSnapshots.First?.Value is not UndoSnapshot snapshot
+            || !snapshot.IsChoiceAnchor
+            || snapshot.ChoiceSpec == null)
+        {
+            return false;
+        }
+
+        if (snapshot.ChoiceSpec.Kind is not (UndoChoiceKind.ChooseACard or UndoChoiceKind.HandSelection or UndoChoiceKind.SimpleGridSelection))
+            return false;
+
+        ulong? localNetId = LocalContext.NetId;
+        if (localNetId != null && action.OwnerId != localNetId.Value)
+        {
+            CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+            if (combatState?.Players.Count > 1)
+                return false;
+        }
+
+        return true;
     }
 
     private bool MoveCurrentChoiceAnchorToDestinationIfNeeded(LinkedList<UndoSnapshot> source, LinkedList<UndoSnapshot> destination)
@@ -3016,7 +3218,8 @@ public sealed class UndoController
             selectionSessionState,
             CaptureFirstInSeriesPlayCounts(combatState),
             creatureTopologyStates: UndoCreatureTopologyCodecRegistry.Capture(combatState.Creatures),
-            creatureStatusRuntimeStates: UndoCreatureStatusCodecRegistry.Capture(combatState.Creatures));
+            creatureStatusRuntimeStates: UndoCreatureStatusCodecRegistry.Capture(combatState.Creatures),
+            combatCardDbState: CaptureCombatCardDbState(runState));
     }
 
     private static IReadOnlyList<UndoMonsterState> CaptureMonsterStates(IReadOnlyList<Creature> creatures)
@@ -3065,6 +3268,9 @@ public sealed class UndoController
         if (creature.Player != null)
             return $"player:{index}:{creature.Player.NetId}";
 
+        if (creature.PetOwner != null && creature.Monster != null)
+            return $"pet:{index}:{creature.PetOwner.NetId}:{creature.Monster.Id.Entry}";
+
         if (creature.Monster != null)
             return $"monster:{index}:{creature.Monster.Id.Entry}";
 
@@ -3080,6 +3286,40 @@ public sealed class UndoController
         {
             if (ReferenceEquals(creatures[i], target))
                 return BuildCreatureKey(target, i);
+        }
+
+        if (target.PetOwner != null && target.Monster != null)
+        {
+            for (int i = 0; i < creatures.Count; i++)
+            {
+                Creature candidate = creatures[i];
+                if (candidate.PetOwner?.NetId != target.PetOwner.NetId)
+                    continue;
+
+                if (candidate.Monster?.Id != target.Monster.Id)
+                    continue;
+
+                return BuildCreatureKey(candidate, i);
+            }
+        }
+
+        if (target.Player != null)
+        {
+            for (int i = 0; i < creatures.Count; i++)
+            {
+                if (creatures[i].Player?.NetId == target.Player.NetId)
+                    return BuildCreatureKey(creatures[i], i);
+            }
+        }
+
+        if (target.Monster != null)
+        {
+            for (int i = 0; i < creatures.Count; i++)
+            {
+                Creature candidate = creatures[i];
+                if (candidate.Monster?.Id == target.Monster.Id)
+                    return BuildCreatureKey(candidate, i);
+            }
         }
 
         return null;
@@ -3139,20 +3379,45 @@ public sealed class UndoController
 
     private static UndoCardRuntimeState CaptureCardRuntimeState(CardModel card, UndoRuntimeCaptureContext context)
     {
-        UndoEnchantmentRuntimeState? enchantmentState = card.Enchantment == null
-            ? null
-            : new UndoEnchantmentRuntimeState
-            {
-                Status = card.Enchantment.Status
-            };
+        return CreateCardRuntimeState(
+            card,
+            CaptureEnchantmentRuntimeState(card.Enchantment),
+            UndoRuntimeStateCodecRegistry.CaptureCardStates(card, context));
+    }
 
+    private static UndoCardRuntimeState CaptureDefaultCardRuntimeState(CardModel card)
+    {
+        return CreateCardRuntimeState(card, CaptureEnchantmentRuntimeState(card.Enchantment), []);
+    }
+
+    private static UndoCardRuntimeState CreateCardRuntimeState(
+        CardModel card,
+        UndoEnchantmentRuntimeState? enchantmentState,
+        IReadOnlyList<UndoComplexRuntimeState> complexStates)
+    {
         return new UndoCardRuntimeState
         {
+            BaseReplayCount = card.BaseReplayCount,
             HasSingleTurnRetain = FindProperty(card.GetType(), "HasSingleTurnRetain")?.GetValue(card) is bool retain && retain,
             HasSingleTurnSly = FindProperty(card.GetType(), "HasSingleTurnSly")?.GetValue(card) is bool sly && sly,
             ExhaustOnNextPlay = card.ExhaustOnNextPlay,
             EnchantmentState = enchantmentState,
-            ComplexStates = UndoRuntimeStateCodecRegistry.CaptureCardStates(card, context)
+            ComplexStates = complexStates
+        };
+    }
+
+    private static UndoEnchantmentRuntimeState? CaptureEnchantmentRuntimeState(EnchantmentModel? enchantment)
+    {
+        if (enchantment == null)
+            return null;
+
+        return new UndoEnchantmentRuntimeState
+        {
+            Serializable = ClonePacketSerializable(enchantment.ToSerializable()),
+            Status = enchantment.Status,
+            BoolProperties = CaptureRuntimeBoolProperties(enchantment),
+            IntProperties = CaptureRuntimeIntProperties(enchantment, "Amount"),
+            EnumProperties = CaptureRuntimeEnumProperties(enchantment)
         };
     }
 
@@ -3703,13 +3968,13 @@ public sealed class UndoController
         if (runtimeState == null)
             return;
 
+        card.BaseReplayCount = runtimeState.BaseReplayCount;
         if (!TrySetPrivateAutoPropertyBackingField(card, "HasSingleTurnRetain", runtimeState.HasSingleTurnRetain))
             SetPrivatePropertyValue(card, "HasSingleTurnRetain", runtimeState.HasSingleTurnRetain);
         if (!TrySetPrivateAutoPropertyBackingField(card, "HasSingleTurnSly", runtimeState.HasSingleTurnSly))
             SetPrivatePropertyValue(card, "HasSingleTurnSly", runtimeState.HasSingleTurnSly);
         card.ExhaustOnNextPlay = runtimeState.ExhaustOnNextPlay;
-        if (runtimeState.EnchantmentState != null && card.Enchantment != null)
-            card.Enchantment.Status = runtimeState.EnchantmentState.Status;
+        RestoreEnchantmentRuntimeState(card, runtimeState.EnchantmentState);
 
         UndoRuntimeRestoreContext context = new()
         {
@@ -3717,6 +3982,34 @@ public sealed class UndoController
             CombatState = combatState
         };
         UndoRuntimeStateCodecRegistry.RestoreCardStates(card, runtimeState.ComplexStates, context);
+    }
+
+    private static void RestoreEnchantmentRuntimeState(CardModel card, UndoEnchantmentRuntimeState? enchantmentState)
+    {
+        if (enchantmentState == null)
+        {
+            if (card.Enchantment != null)
+                card.ClearEnchantmentInternal();
+
+            return;
+        }
+
+        if (card.Enchantment == null && enchantmentState.Serializable != null)
+        {
+            EnchantmentModel enchantment = EnchantmentModel.FromSerializable(ClonePacketSerializable(enchantmentState.Serializable));
+            card.EnchantInternal(enchantment, enchantment.Amount);
+            card.Enchantment?.ModifyCard();
+        }
+
+        if (card.Enchantment == null)
+            return;
+
+        card.Enchantment.Status = enchantmentState.Status;
+        RestoreRuntimeBoolProperties(card.Enchantment, enchantmentState.BoolProperties);
+        RestoreRuntimeIntProperties(card.Enchantment, enchantmentState.IntProperties);
+        RestoreRuntimeEnumProperties(card.Enchantment, enchantmentState.EnumProperties);
+        card.Enchantment.RecalculateValues();
+        card.DynamicVars.RecalculateForUpgradeOrEnchant();
     }
 
     private static void RestoreCardCostState(CardModel card, UndoCardCostState? costState)
@@ -3919,18 +4212,104 @@ public sealed class UndoController
         InvokePrivateMethod(actionQueueSet, "CheckIfQueuesEmpty");
     }
 
-    private static void RebuildTransientCombatCaches(RunState runState)
+    private static UndoCombatCardDbState CaptureCombatCardDbState(RunState runState)
     {
-        RebuildNetCombatCardDb(runState.Players);
+        NetCombatCardDb db = NetCombatCardDb.Instance;
+        if (GetPrivateFieldValue<System.Collections.IDictionary>(db, "_idToCard") is not { } idToCard)
+            return new UndoCombatCardDbState();
+
+        List<UndoCombatCardDbEntryState> entries = [];
+        foreach (System.Collections.DictionaryEntry entry in idToCard)
+        {
+            if (entry.Key is not uint combatCardId || entry.Value is not CardModel card || !card.IsMutable)
+                continue;
+
+            entries.Add(new UndoCombatCardDbEntryState
+            {
+                CombatCardId = combatCardId,
+                Card = UndoStableRefs.CaptureCardRef(runState, card)
+            });
+        }
+
+        return new UndoCombatCardDbState
+        {
+            Entries = [.. entries.OrderBy(static entry => entry.CombatCardId)],
+            NextId = FindField(db.GetType(), "_nextId")?.GetValue(db) is uint nextId ? nextId : 0U
+        };
+    }
+
+    private static void RestoreCombatCardDbState(RunState runState, NetCombatCardDb db, UndoCombatCardDbState combatCardDbState)
+    {
+        if (GetPrivateFieldValue<System.Collections.IDictionary>(db, "_idToCard") is not { } idToCard
+            || GetPrivateFieldValue<System.Collections.IDictionary>(db, "_cardToId") is not { } cardToId)
+        {
+            return;
+        }
+
+        List<CardModel> fallbackCards = cardToId.Keys.OfType<CardModel>().Where(static card => card.IsMutable).ToList();
+        idToCard.Clear();
+        cardToId.Clear();
+
+        uint nextId = combatCardDbState.NextId;
+        foreach (UndoCombatCardDbEntryState entry in combatCardDbState.Entries.OrderBy(static entry => entry.CombatCardId))
+        {
+            CardModel card = UndoStableRefs.ResolveCardRef(runState, entry.Card);
+            if (!card.IsMutable || !IsCardInCombatPiles(runState, card) || cardToId.Contains(card) || idToCard.Contains(entry.CombatCardId))
+                continue;
+
+            idToCard[entry.CombatCardId] = card;
+            cardToId[card] = entry.CombatCardId;
+            if (entry.CombatCardId >= nextId)
+                nextId = entry.CombatCardId + 1;
+        }
+
+        foreach (CardModel card in fallbackCards)
+        {
+            if (cardToId.Contains(card))
+                continue;
+
+            while (idToCard.Contains(nextId))
+                nextId++;
+
+            idToCard[nextId] = card;
+            cardToId[card] = nextId;
+            nextId++;
+        }
+
+        UndoReflectionUtil.TrySetFieldValue(db, "_nextId", nextId);
+    }
+
+    private static bool IsCardInCombatPiles(RunState runState, CardModel card)
+    {
+        foreach (Player player in runState.Players)
+        {
+            if (player.PlayerCombatState == null)
+                continue;
+
+            foreach (CardPile pile in player.PlayerCombatState.AllPiles)
+            {
+                if (pile.Cards.Contains(card))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+    private static void RebuildTransientCombatCaches(RunState runState, UndoCombatCardDbState? combatCardDbState = null)
+    {
+        RebuildNetCombatCardDb(runState, combatCardDbState);
         RebuildPotionContainer(runState);
     }
 
-    private static void RebuildNetCombatCardDb(IReadOnlyList<Player> players)
+    private static void RebuildNetCombatCardDb(RunState runState, UndoCombatCardDbState? combatCardDbState)
     {
         NetCombatCardDb db = NetCombatCardDb.Instance;
         InvokePrivateMethod(db, "OnCombatEnded", new object?[] { null });
         db.ClearCardsForTesting();
-        db.StartCombat(players);
+        db.StartCombat(runState.Players);
+
+        if (combatCardDbState != null)
+            RestoreCombatCardDbState(runState, db, combatCardDbState);
     }
 
     private static void RebuildPotionContainer(RunState runState)
@@ -4484,6 +4863,9 @@ public sealed class UndoController
     {
         foreach (Player player in combatState.Players)
             player.PlayerCombatState?.RecalculateCardValues();
+        UndoRuntimeStateCodecRegistry.RefreshPowerDisplays(combatState);
+        if (NCombatRoom.Instance != null)
+            UndoSpecialCreatureVisualNormalizer.DetachStateDisplayTracking(NCombatRoom.Instance);
         ClearTransientCardVisuals();
         NormalizeCombatInteractionState(combatState);
         RebuildCombatCreatureNodesIfNeeded(combatState);
@@ -5161,8 +5543,14 @@ public sealed class UndoController
         return null;
     }
 
-    private static UndoCombatFullState CreateDerivedCombatState(UndoCombatFullState source, NetFullCombatState fullState)
+    private static UndoCombatFullState CreateDerivedCombatState(
+        UndoCombatFullState source,
+        NetFullCombatState fullState,
+        IReadOnlyList<UndoPlayerPileCardCostState>? cardCostStates = null,
+        IReadOnlyList<UndoPlayerPileCardRuntimeState>? cardRuntimeStates = null)
     {
+        IReadOnlyList<UndoPlayerPileCardCostState> effectiveCardCostStates = cardCostStates ?? source.CardCostStates;
+        IReadOnlyList<UndoPlayerPileCardRuntimeState> effectiveCardRuntimeStates = cardRuntimeStates ?? source.CardRuntimeStates;
         return new UndoCombatFullState(
             fullState,
             source.RoundNumber,
@@ -5174,17 +5562,183 @@ public sealed class UndoController
             source.CombatHistoryState,
             source.ActionKernelState,
             source.MonsterStates,
-            source.CardCostStates,
-            source.CardRuntimeStates,
+            effectiveCardCostStates,
+            effectiveCardRuntimeStates,
             source.PowerRuntimeStates,
             source.RelicRuntimeStates,
             source.SelectionSessionState,
             source.FirstInSeriesPlayCounts,
-            source.RuntimeGraphState,
-            source.PresentationHints,
+            new RuntimeGraphState
+            {
+                CardRuntimeStates = effectiveCardRuntimeStates,
+                PowerRuntimeStates = source.PowerRuntimeStates,
+                RelicRuntimeStates = source.RelicRuntimeStates
+            },
+            new PresentationHints
+            {
+                SelectionSessionState = source.SelectionSessionState
+            },
             source.CreatureTopologyStates,
             source.CreatureStatusRuntimeStates,
+            source.CombatCardDbState,
             source.SchemaVersion);
+    }
+
+    private static UndoCombatFullState CreateDerivedCombatState(
+        UndoCombatFullState source,
+        UndoCombatFullState? fallbackSource,
+        NetFullCombatState fullState)
+    {
+        RebuildDerivedCardSupplementalStates(source, fallbackSource, fullState, out IReadOnlyList<UndoPlayerPileCardCostState> cardCostStates, out IReadOnlyList<UndoPlayerPileCardRuntimeState> cardRuntimeStates);
+        return CreateDerivedCombatState(source, fullState, cardCostStates, cardRuntimeStates);
+    }
+
+    private static void RebuildDerivedCardSupplementalStates(
+        UndoCombatFullState primarySource,
+        UndoCombatFullState? fallbackSource,
+        NetFullCombatState fullState,
+        out IReadOnlyList<UndoPlayerPileCardCostState> cardCostStates,
+        out IReadOnlyList<UndoPlayerPileCardRuntimeState> cardRuntimeStates)
+    {
+        List<UndoPlayerPileCardCostState> rebuiltCostStates = [];
+        List<UndoPlayerPileCardRuntimeState> rebuiltRuntimeStates = [];
+
+        foreach (NetFullCombatState.PlayerState playerState in fullState.Players)
+        {
+            List<DerivedCardSupplementalCandidate> primaryCandidates = BuildDerivedCardSupplementalCandidates(primarySource, playerState.playerId);
+            List<DerivedCardSupplementalCandidate> fallbackCandidates = fallbackSource == null
+                ? []
+                : BuildDerivedCardSupplementalCandidates(fallbackSource, playerState.playerId);
+            Dictionary<PileType, NetFullCombatState.CombatPileState> pilesByType = playerState.piles.ToDictionary(static pile => pile.pileType);
+
+            foreach (PileType pileType in CombatPileOrder)
+            {
+                List<UndoCardCostState> pileCostStates = [];
+                List<UndoCardRuntimeState> pileRuntimeStates = [];
+                if (pilesByType.TryGetValue(pileType, out NetFullCombatState.CombatPileState pileState))
+                {
+                    for (int cardIndex = 0; cardIndex < pileState.cards.Count; cardIndex++)
+                    {
+                        NetFullCombatState.CardState cardState = pileState.cards[cardIndex];
+                        if (!TryTakeMatchingCardSupplementalState(primaryCandidates, pileType, cardIndex, cardState.card, out UndoCardCostState? costState, out UndoCardRuntimeState? runtimeState)
+                            && !TryTakeMatchingCardSupplementalState(fallbackCandidates, pileType, cardIndex, cardState.card, out costState, out runtimeState))
+                        {
+                            CardModel defaultCard = CardModel.FromSerializable(ClonePacketSerializable(cardState.card));
+                            costState = CaptureCardCostState(defaultCard);
+                            runtimeState = CaptureDefaultCardRuntimeState(defaultCard);
+                        }
+
+                        pileCostStates.Add(costState ?? CaptureCardCostState(CardModel.FromSerializable(ClonePacketSerializable(cardState.card))));
+                        pileRuntimeStates.Add(runtimeState ?? CaptureDefaultCardRuntimeState(CardModel.FromSerializable(ClonePacketSerializable(cardState.card))));
+                    }
+                }
+
+                rebuiltCostStates.Add(new UndoPlayerPileCardCostState
+                {
+                    PlayerNetId = playerState.playerId,
+                    PileType = pileType,
+                    Cards = pileCostStates
+                });
+                rebuiltRuntimeStates.Add(new UndoPlayerPileCardRuntimeState
+                {
+                    PlayerNetId = playerState.playerId,
+                    PileType = pileType,
+                    Cards = pileRuntimeStates
+                });
+            }
+        }
+
+        cardCostStates = rebuiltCostStates;
+        cardRuntimeStates = rebuiltRuntimeStates;
+    }
+
+    private static List<DerivedCardSupplementalCandidate> BuildDerivedCardSupplementalCandidates(UndoCombatFullState source, ulong playerNetId)
+    {
+        NetFullCombatState.PlayerState playerState = default;
+        bool foundPlayer = false;
+        foreach (NetFullCombatState.PlayerState candidate in source.FullState.Players)
+        {
+            if (candidate.playerId != playerNetId)
+                continue;
+
+            playerState = candidate;
+            foundPlayer = true;
+            break;
+        }
+
+        if (!foundPlayer)
+            return [];
+
+        IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardCostState>>? costStatesByPile = GetCardCostStatesForPlayer(source, playerNetId);
+        IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? runtimeStatesByPile = GetCardRuntimeStatesForPlayer(source, playerNetId);
+        Dictionary<PileType, NetFullCombatState.CombatPileState> pilesByType = playerState.piles.ToDictionary(static pile => pile.pileType);
+        List<DerivedCardSupplementalCandidate> candidates = [];
+
+        foreach (PileType pileType in CombatPileOrder)
+        {
+            if (!pilesByType.TryGetValue(pileType, out NetFullCombatState.CombatPileState pileState))
+                continue;
+
+            IReadOnlyList<UndoCardCostState>? pileCostStates = null;
+            IReadOnlyList<UndoCardRuntimeState>? pileRuntimeStates = null;
+            costStatesByPile?.TryGetValue(pileType, out pileCostStates);
+            runtimeStatesByPile?.TryGetValue(pileType, out pileRuntimeStates);
+            for (int cardIndex = 0; cardIndex < pileState.cards.Count; cardIndex++)
+            {
+                candidates.Add(new DerivedCardSupplementalCandidate
+                {
+                    PileType = pileType,
+                    CardIndex = cardIndex,
+                    Card = ClonePacketSerializable(pileState.cards[cardIndex].card),
+                    CostState = pileCostStates != null && cardIndex < pileCostStates.Count ? pileCostStates[cardIndex] : null,
+                    RuntimeState = pileRuntimeStates != null && cardIndex < pileRuntimeStates.Count ? pileRuntimeStates[cardIndex] : null
+                });
+            }
+        }
+
+        return candidates;
+    }
+
+    private static bool TryTakeMatchingCardSupplementalState(
+        List<DerivedCardSupplementalCandidate> candidates,
+        PileType pileType,
+        int cardIndex,
+        SerializableCard card,
+        out UndoCardCostState? costState,
+        out UndoCardRuntimeState? runtimeState)
+    {
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            DerivedCardSupplementalCandidate candidate = candidates[i];
+            if (candidate.Used
+                || candidate.PileType != pileType
+                || candidate.CardIndex != cardIndex
+                || !PacketDataEquals(candidate.Card, card))
+            {
+                continue;
+            }
+
+            candidate.Used = true;
+            costState = candidate.CostState;
+            runtimeState = candidate.RuntimeState;
+            return true;
+        }
+
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            DerivedCardSupplementalCandidate candidate = candidates[i];
+            if (candidate.Used || !PacketDataEquals(candidate.Card, card))
+                continue;
+
+            candidate.Used = true;
+            costState = candidate.CostState;
+            runtimeState = candidate.RuntimeState;
+            return true;
+        }
+
+        costState = null;
+        runtimeState = null;
+        return false;
     }
 
     private static SerializableRun CloneRun(SerializableRun run)
@@ -5313,6 +5867,21 @@ public sealed class UndoController
         return completionSource.Task;
     }
 
+    private sealed class DerivedCardSupplementalCandidate
+    {
+        public required PileType PileType { get; init; }
+
+        public required int CardIndex { get; init; }
+
+        public required SerializableCard Card { get; init; }
+
+        public UndoCardCostState? CostState { get; init; }
+
+        public UndoCardRuntimeState? RuntimeState { get; init; }
+
+        public bool Used { get; set; }
+    }
+
     private sealed class SyntheticChoiceVfxRequest
     {
         public List<SyntheticExhaustVfxCard> ExhaustCards { get; } = [];
@@ -5328,6 +5897,14 @@ public sealed class UndoController
 
     private sealed record SyntheticTransformVfxCard(SerializableCard Card, int SourcePileIndex);
 }
+
+
+
+
+
+
+
+
 
 
 

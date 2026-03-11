@@ -314,6 +314,20 @@ internal static class UndoRuntimeStateCodecRegistry
         }
     }
 
+    public static void RefreshPowerDisplays(CombatState combatState)
+    {
+        foreach (Creature creature in combatState.Creatures)
+        {
+            foreach (PowerModel power in creature.Powers)
+                InvokeDisplayAmountChanged(power);
+        }
+    }
+
+    private static void InvokeDisplayAmountChanged(PowerModel power)
+    {
+        UndoReflectionUtil.FindMethod(power.GetType(), "InvokeDisplayAmountChanged")?.Invoke(power, []);
+    }
+
     private static object? GetPowerInternalData(PowerModel power)
     {
         return UndoReflectionUtil.FindField(typeof(PowerModel), "_internalData")?.GetValue(power);
@@ -372,6 +386,7 @@ internal static class UndoRuntimeStateCodecRegistry
                 return;
 
             UndoReflectionUtil.TrySetFieldValue(internalData, "cardsLeft", state.Value);
+            InvokeDisplayAmountChanged(power);
         }
     }
 
@@ -728,6 +743,7 @@ internal static class UndoRuntimeStateCodecRegistry
         }
     }
 }
+
 
 
 

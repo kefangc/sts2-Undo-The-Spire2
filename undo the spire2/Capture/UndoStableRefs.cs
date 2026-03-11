@@ -1,4 +1,4 @@
-﻿using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -91,6 +91,9 @@ internal static class UndoStableRefs
         if (creature.Player != null)
             return $"player:{index}:{creature.Player.NetId}";
 
+        if (creature.PetOwner != null && creature.Monster != null)
+            return $"pet:{index}:{creature.PetOwner.NetId}:{creature.Monster.Id.Entry}";
+
         if (creature.Monster != null)
             return $"monster:{index}:{creature.Monster.Id.Entry}";
 
@@ -123,6 +126,21 @@ internal static class UndoStableRefs
             {
                 if (creatures[i].Player?.NetId == target.Player.NetId)
                     return BuildCreatureKey(creatures[i], i);
+            }
+        }
+
+        if (target.PetOwner != null && target.Monster != null)
+        {
+            for (int i = 0; i < creatures.Count; i++)
+            {
+                Creature candidate = creatures[i];
+                if (candidate.PetOwner?.NetId != target.PetOwner.NetId)
+                    continue;
+
+                if (candidate.Monster?.Id != target.Monster.Id)
+                    continue;
+
+                return BuildCreatureKey(candidate, i);
             }
         }
 

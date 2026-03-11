@@ -19,6 +19,8 @@ internal sealed class UndoPlayerPileCardRuntimeState
 
 internal sealed class UndoCardRuntimeState
 {
+    public int BaseReplayCount { get; init; }
+
     public bool HasSingleTurnRetain { get; init; }
 
     public bool HasSingleTurnSly { get; init; }
@@ -32,7 +34,15 @@ internal sealed class UndoCardRuntimeState
 
 internal sealed class UndoEnchantmentRuntimeState
 {
+    public SerializableEnchantment? Serializable { get; init; }
+
     public EnchantmentStatus Status { get; init; }
+
+    public IReadOnlyList<UndoNamedBoolState> BoolProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedEnumState> EnumProperties { get; init; } = [];
 }
 
 internal sealed class UndoNamedBoolState

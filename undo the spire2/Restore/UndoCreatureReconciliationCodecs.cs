@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Powers;
@@ -29,6 +30,7 @@ internal static class UndoCreatureReconciliationCodecRegistry
         new LagavulinMatriarchReconciliationCodec(),
         new OwlMagistrateReconciliationCodec(),
         new QueenReconciliationCodec(),
+        new OstyReconciliationCodec(),
         new TunnelerReconciliationCodec(),
         new CeremonialBeastReconciliationCodec(),
         new WrigglerReconciliationCodec(),
@@ -241,11 +243,12 @@ internal static class UndoCreatureReconciliationCodecRegistry
             if (!string.IsNullOrWhiteSpace(targetMoveId))
                 TrySetMove(owl, targetMoveId);
 
-            bool shouldBeFlying = hasSoar || string.Equals(targetMoveId, "VERDICT", StringComparison.Ordinal);
-            TrySetBoolProperty(owl, "IsFlying", shouldBeFlying);
+            // Flying is only true after Judicial Flight has actually resolved and Soar is active.
+            // Undoing back to the pre-flight intent should leave the owl grounded even if the current
+            // move chain still points at JUDICIAL_FLIGHT.
+            TrySetBoolProperty(owl, "IsFlying", hasSoar);
         }
     }
-
     private sealed class QueenReconciliationCodec : IUndoCreatureReconciliationCodec
     {
         private static readonly HashSet<string> EnragedPathMoveIds =
@@ -286,6 +289,41 @@ internal static class UndoCreatureReconciliationCodecRegistry
 
             if (!string.IsNullOrWhiteSpace(targetMoveId))
                 TrySetMove(queen, targetMoveId);
+        }
+    }
+
+    private sealed class OstyReconciliationCodec : IUndoCreatureReconciliationCodec
+    {
+        public string CodecId => "reconcile:Osty.LocalPetConsistency";
+
+        public bool CanHandle(MonsterModel monster)
+        {
+            return monster is Osty;
+        }
+
+        public void Reconcile(MonsterModel monster, UndoMonsterState? state)
+        {
+            Osty osty = (Osty)monster;
+            Player? owner = osty.Creature.PetOwner;
+            if (owner?.PlayerCombatState == null)
+                return;
+
+            if (!owner.PlayerCombatState.Pets.Contains(osty.Creature))
+                owner.PlayerCombatState.AddPetInternal(osty.Creature);
+
+            if (!ReferenceEquals(owner.Osty, osty.Creature))
+            {
+                Creature? existingOsty = owner.PlayerCombatState.GetPet<Osty>();
+                if (existingOsty != null && !ReferenceEquals(existingOsty, osty.Creature))
+                    owner.PlayerCombatState.AddPetInternal(osty.Creature);
+            }
+
+            if (osty.Creature.IsAlive)
+            {
+                string? targetMoveId = state?.NextMoveId ?? osty.NextMove?.Id;
+                if (string.IsNullOrWhiteSpace(targetMoveId) || !string.Equals(targetMoveId, "NOTHING_MOVE", StringComparison.Ordinal))
+                    TrySetMove(osty, "NOTHING_MOVE");
+            }
         }
     }
 

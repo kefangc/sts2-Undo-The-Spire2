@@ -18,7 +18,7 @@ internal static class UndoCombatHistoryCodec
 {
     public static UndoCombatHistoryState Capture(RunState runState, CombatState combatState)
     {
-        IReadOnlyList<Creature> creatures = combatState.Creatures;
+        IReadOnlyList<Creature> creatures = GetHistoryCreatures(runState, combatState);
         List<UndoCombatHistoryEntryState> entries = [];
         foreach (CombatHistoryEntry entry in CombatManager.Instance.History.Entries)
         {
@@ -46,7 +46,7 @@ internal static class UndoCombatHistoryCodec
         if (UndoReflectionUtil.FindField(typeof(CombatHistory), "_entries")?.GetValue(history) is not IList entries)
             throw new InvalidOperationException("Could not access CombatHistory._entries.");
 
-        Dictionary<string, Creature> creaturesByKey = UndoStableRefs.BuildCreatureKeyMap(combatState.Creatures);
+        Dictionary<string, Creature> creaturesByKey = UndoStableRefs.BuildCreatureKeyMap(GetHistoryCreatures(runState, combatState));
         foreach (UndoCombatHistoryEntryState state in historyState.Entries)
             entries.Add(RestoreEntry(runState, creaturesByKey, history, state));
 
@@ -325,6 +325,37 @@ internal static class UndoCombatHistoryCodec
         if (actor != null)
             return actor;
 
+        if (entry is DamageReceivedEntry damageReceived)
+        {
+            actor = UndoStableRefs.CaptureCreatureRef(creatures, damageReceived.Receiver);
+            if (actor != null)
+                return actor;
+
+            actor = UndoStableRefs.CaptureCreatureRef(creatures, damageReceived.Result?.Receiver);
+            if (actor != null)
+                return actor;
+
+            actor = UndoStableRefs.CaptureCreatureRef(creatures, damageReceived.Dealer);
+            if (actor != null)
+                return actor;
+        }
+
+        if (entry is CreatureAttackedEntry attacked)
+        {
+            actor = attacked.DamageResults
+                .Select(result => UndoStableRefs.CaptureCreatureRef(creatures, result.Receiver))
+                .FirstOrDefault(static resolved => resolved != null);
+            if (actor != null)
+                return actor;
+        }
+
+        if (entry is MonsterPerformedMoveEntry performedMove)
+        {
+            actor = UndoStableRefs.CaptureCreatureRef(creatures, performedMove.Monster?.Creature);
+            if (actor != null)
+                return actor;
+        }
+
         if (entry is PowerReceivedEntry powerReceived)
         {
             actor = UndoStableRefs.CaptureCreatureRef(creatures, powerReceived.Power?.Owner);
@@ -475,7 +506,9 @@ internal static class UndoCombatHistoryCodec
     {
         Player player = runState.GetPlayer(potionRef.PlayerNetId)
             ?? throw new InvalidOperationException($"Could not resolve potion owner {potionRef.PlayerNetId}.");
-        PotionModel? livePotion = player.GetPotionAtSlotIndex(potionRef.SlotIndex);
+        PotionModel? livePotion = null;
+        if (potionRef.SlotIndex >= 0 && potionRef.SlotIndex < player.MaxPotionCount)
+            livePotion = player.GetPotionAtSlotIndex(potionRef.SlotIndex);
         if (livePotion?.Id == potionRef.PotionId)
             return livePotion;
 
@@ -518,16 +551,26 @@ internal static class UndoCombatHistoryCodec
         OrbModel detachedOrb = ModelDb.GetById<OrbModel>(orbRef.OrbId).ToMutable();
         detachedOrb.Owner = player;
         return detachedOrb;
-    }
-
-    private static MoveState CreatePlaceholderMove(string moveId)
+    }    private static MoveState CreatePlaceholderMove(string moveId)
     {
         return new MoveState(moveId, _ => Task.CompletedTask);
     }
+
+    private static IReadOnlyList<Creature> GetHistoryCreatures(RunState runState, CombatState combatState)
+    {
+        List<Creature> creatures = [.. combatState.Creatures];
+        foreach (Player player in runState.Players)
+        {
+            if (player.PlayerCombatState == null)
+                continue;
+
+            foreach (Creature pet in player.PlayerCombatState.Pets)
+            {
+                if (!creatures.Contains(pet))
+                    creatures.Add(pet);
+            }
+        }
+
+        return creatures;
+    }
 }
-
-
-
-
-
-

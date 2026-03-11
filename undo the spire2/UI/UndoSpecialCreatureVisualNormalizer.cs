@@ -4,6 +4,7 @@ using System.Linq;
 using Godot;
 using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -46,6 +47,12 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
         foreach (Creature creature in combatState.Creatures)
             RefreshCreatureStatusVisual(creature, combatRoom);
+    }
+
+    public static void DetachStateDisplayTracking(NCombatRoom combatRoom)
+    {
+        foreach (NCreature creatureNode in combatRoom.CreatureNodes)
+            RebindStateDisplayTracking(creatureNode, null);
     }
 
     public static bool TryGetPaelsLegionExpectation(Creature creature, out PaelsLegionVisualExpectation? expectation)
@@ -94,6 +101,9 @@ internal static class UndoSpecialCreatureVisualNormalizer
                 break;
             case OwlMagistrate owlMagistrate:
                 NormalizeOwlMagistrate(owlMagistrate, creatureNode);
+                break;
+            case Osty osty:
+                NormalizeOsty(osty, creatureNode);
                 break;
             case BowlbugRock bowlbugRock:
                 NormalizeBowlbugRock(bowlbugRock, creatureNode);
@@ -183,11 +193,81 @@ internal static class UndoSpecialCreatureVisualNormalizer
             SfxCmd.PlayLoop("event:/sfx/enemy/enemy_attacks/owl_magistrate/owl_magistrate_fly_loop", true);
             creatureNode.SetAnimationTrigger("TakeOff");
             EnsureBaseAnimation(creatureNode, "fly_loop", loop: true);
+            ApplyBoundsContainer(creatureNode, "FlyingBounds");
             return;
         }
 
         StopLoopSfx("event:/sfx/enemy/enemy_attacks/owl_magistrate/owl_magistrate_fly_loop");
-        EnsureIdleState(creatureNode);
+        EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
+        ApplyBoundsContainer(creatureNode, "IdleBounds");
+    }
+
+    private static void NormalizeOsty(Osty monster, NCreature creatureNode)
+    {
+        Player? owner = monster.Creature.PetOwner;
+        if (owner == null)
+        {
+            RebindStateDisplayTracking(creatureNode, null);
+            return;
+        }
+
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        NCreature? ownerNode = combatRoom?.GetCreatureNode(owner.Creature);
+        bool localNecrobinderOwner = LocalContext.IsMe(owner)
+            && string.Equals(owner.Character.GetType().Name, "Necrobinder", StringComparison.Ordinal);
+
+        if (monster.Creature.IsAlive)
+        {
+            RebindStateDisplayTracking(creatureNode, owner.Creature);
+            creatureNode.OstyScaleToSize((float)monster.Creature.MaxHp, 0f);
+            if (localNecrobinderOwner && ownerNode != null)
+                creatureNode.Position = ownerNode.Position + NCreature.GetOstyOffsetFromPlayer(monster.Creature);
+            EnsureIdleState(creatureNode);
+            return;
+        }
+
+        RebindStateDisplayTracking(creatureNode, null);
+        creatureNode.OstyScaleToSize((float)monster.Creature.MaxHp, 0f);
+        creatureNode.StartDeathAnim(false);
+        EnsureBaseAnimation(creatureNode, "dead_loop", loop: true);
+    }
+
+    private static void RebindStateDisplayTracking(NCreature creatureNode, Creature? creatureToTrack)
+    {
+        object? stateDisplay = UndoReflectionUtil.FindField(creatureNode.GetType(), "_stateDisplay")?.GetValue(creatureNode);
+        if (stateDisplay is not GodotObject stateDisplayObject || !GodotObject.IsInstanceValid(stateDisplayObject))
+            return;
+
+        Creature? previousTrackedCreature = UndoReflectionUtil.FindField(stateDisplay.GetType(), "_blockTrackingCreature")?.GetValue(stateDisplay) as Creature;
+        if (previousTrackedCreature != null)
+            TryUnsubscribeBlockTracking(stateDisplay, previousTrackedCreature);
+
+        UndoReflectionUtil.TrySetFieldValue(stateDisplay, "_blockTrackingCreature", null);
+        object? healthBar = UndoReflectionUtil.FindField(stateDisplay.GetType(), "_healthBar")?.GetValue(stateDisplay);
+        if (healthBar != null)
+            UndoReflectionUtil.TrySetFieldValue(healthBar, "_blockTrackingCreature", null);
+
+        if (creatureToTrack != null)
+            creatureNode.TrackBlockStatus(creatureToTrack);
+    }
+
+    private static void TryUnsubscribeBlockTracking(object stateDisplay, Creature trackedCreature)
+    {
+        try
+        {
+            System.Reflection.MethodInfo? handlerMethod = UndoReflectionUtil.FindMethod(stateDisplay.GetType(), "OnBlockTrackingCreatureBlockChanged");
+            if (handlerMethod == null)
+                return;
+
+            if (Delegate.CreateDelegate(typeof(Action<int, int>), stateDisplay, handlerMethod, false) is not Action<int, int> handler)
+                return;
+
+            trackedCreature.BlockChanged -= handler;
+        }
+        catch
+        {
+            // Best-effort cleanup. Restore should proceed even if an old display was already detached.
+        }
     }
 
     internal enum SlumberingBeetleVisualState
@@ -256,13 +336,12 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     internal static OwlMagistrateVisualState GetOwlMagistrateVisualState(OwlMagistrate monster)
     {
-        bool hasSoarPower = monster.Creature.HasPower<SoarPower>();
         bool isFlying = ReadBoolMonsterProperty(monster, "IsFlying");
-        string? nextMoveId = monster.NextMove?.Id;
-        return hasSoarPower || isFlying || string.Equals(nextMoveId, "VERDICT", StringComparison.Ordinal)
+        return isFlying
             ? OwlMagistrateVisualState.Flying
             : OwlMagistrateVisualState.Grounded;
     }
+
 
     private static void NormalizeBowlbugRock(BowlbugRock monster, NCreature creatureNode)
     {
@@ -342,6 +421,15 @@ internal static class UndoSpecialCreatureVisualNormalizer
         creatureNode.ToggleIsInteractable(interactable);
     }
 
+    private static void ApplyBoundsContainer(NCreature creatureNode, string boundsContainerName)
+    {
+        Node? boundsContainer = creatureNode.Visuals?.GetNodeOrNull(boundsContainerName);
+        if (boundsContainer == null)
+            return;
+
+        TryInvokePrivateMethod(creatureNode, "UpdateBounds", boundsContainer);
+    }
+
     private static void EnsureIdleState(NCreature creatureNode)
     {
         if (TryInvokePrivateMethod(creatureNode, "ImmediatelySetIdle"))
@@ -350,7 +438,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
         EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
     }
 
-    private static bool TryInvokePrivateMethod(object target, string name)
+    private static bool TryInvokePrivateMethod(object target, string name, params object?[]? args)
     {
         try
         {
@@ -358,7 +446,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
             if (method == null)
                 return false;
 
-            method.Invoke(target, null);
+            method.Invoke(target, args);
             return true;
         }
         catch
@@ -476,7 +564,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static bool ShouldWarmCreatureVisualScene(Creature creature)
     {
-        return creature.Monster is PaelsLegionMonster or SlumberingBeetle or LagavulinMatriarch or Tunneler or OwlMagistrate;
+        return creature.Monster is PaelsLegionMonster or SlumberingBeetle or LagavulinMatriarch or Tunneler or OwlMagistrate or Osty;
     }
 
     // Warm the creature visuals scene explicitly so restore does not depend on it

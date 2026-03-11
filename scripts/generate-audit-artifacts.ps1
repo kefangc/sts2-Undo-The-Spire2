@@ -97,6 +97,7 @@ $coverageMatrix | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $auditDir 'co
 
 $knownCases = @(
     [pscustomobject]@{ id='well-laid-plans'; title='Well Laid Plans'; category='power'; sourceFiles=@('WellLaidPlansPower.cs','CardSelectCmd.cs'); primaryRisk='Paused choice continuation'; scenarioTags=@('choice','retain','end-turn'); assertions=@('paused_choice_captured','primary_choice_supported','primary_restore_used','retain_selection_reopens','no_hidden_choice_anchor_skip') },
+    [pscustomobject]@{ id='toolbox-combat-start'; title='Toolbox Combat Start'; category='relic'; sourceFiles=@('Toolbox.cs','CardSelectCmd.cs'); primaryRisk='combat-start choose-a-card anchor'; scenarioTags=@('relic','choice','choose-a-card','combat-start'); assertions=@('choice_anchor_visible','primary_choice_supported','primary_restore_used','choose_a_card_reopens','no_hidden_choice_anchor_skip') },
     [pscustomobject]@{ id='forgotten-ritual'; title='Forgotten Ritual'; category='card'; sourceFiles=@('ForgottenRitual.cs','CardExhaustedEntry.cs'); primaryRisk='CombatHistory missing'; scenarioTags=@('history','exhaust'); assertions=@('exhaust_history_survives_undo','gold_glow_matches_history') },
     [pscustomobject]@{ id='death-march'; title='Death March'; category='card'; sourceFiles=@('DeathMarch.cs','CardDrawnEntry.cs'); primaryRisk='Per-turn draw history'; scenarioTags=@('history','draw-count'); assertions=@('draw_count_damage_restores') },
     [pscustomobject]@{ id='automation-power'; title='Automation Power'; category='power'; sourceFiles=@('AutomationPower.cs'); primaryRisk='Internal counter cardsLeft'; scenarioTags=@('internal-data','counter'); assertions=@('cards_left_restores','display_counter_restores') },
@@ -108,6 +109,9 @@ $knownCases = @(
     [pscustomobject]@{ id='owl-magistrate-flight'; title='Owl Magistrate'; category='monster'; sourceFiles=@('OwlMagistrate.cs','SoarPower.cs'); primaryRisk='flight state reconciliation and visuals'; scenarioTags=@('monster','flight','visual'); assertions=@('flight_visual_restores','flight_intent_restores') },
     [pscustomobject]@{ id='queen-soulbound'; title='Queen Soulbound'; category='power'; sourceFiles=@('Queen.cs','ChainsOfBindingPower.cs'); primaryRisk='bound-card turn flag runtime'; scenarioTags=@('monster','power','turn-state'); assertions=@('bound_card_play_flag_restores') },
     [pscustomobject]@{ id='queen-amalgam-branch'; title='Queen Amalgam Branch'; category='monster'; sourceFiles=@('Queen.cs','TorchHeadAmalgam.cs'); primaryRisk='linked minion death branch reconciliation'; scenarioTags=@('monster','linked-ref','branch'); assertions=@('queen_branch_intent_restores') },
+    [pscustomobject]@{ id='osty-summon-roundtrip'; title='Osty Summon Roundtrip'; category='monster'; sourceFiles=@('Osty.cs','OstyCmd.cs','Necrobinder.cs'); primaryRisk='local pet summon position and scaling'; scenarioTags=@('monster','pet','summon','necrobinder'); assertions=@('pet_role_restores','osty_owner_restores','osty_position_restores','osty_scale_restores','osty_block_track_restores','no_restore_noop_potion_slot','no_post_restore_input_lock') },
+    [pscustomobject]@{ id='osty-revive-roundtrip'; title='Osty Revive Roundtrip'; category='monster'; sourceFiles=@('Osty.cs','OstyCmd.cs','Necrobinder.cs'); primaryRisk='local pet revive position and scaling'; scenarioTags=@('monster','pet','revive','necrobinder'); assertions=@('pet_role_restores','osty_owner_restores','osty_position_restores','osty_scale_restores','osty_block_track_restores','no_restore_noop_potion_slot','no_post_restore_input_lock') },
+    [pscustomobject]@{ id='osty-enemy-hit-roundtrip'; title='Osty Enemy Hit Roundtrip'; category='monster'; sourceFiles=@('Osty.cs','OstyCmd.cs','Necrobinder.cs'); primaryRisk='local pet block tracking survives enemy hit after undo'; scenarioTags=@('monster','pet','necrobinder','block-tracking'); assertions=@('pet_role_restores','osty_owner_restores','osty_position_restores','osty_scale_restores','osty_block_track_restores','osty_state_display_rebound','no_disposed_block_subscription','no_restore_noop_potion_slot','no_post_restore_input_lock') },
     [pscustomobject]@{ id='slumbering-beetle'; title='Slumbering Beetle'; category='monster'; sourceFiles=@('SlumberingBeetle.cs','SlumberPower.cs'); primaryRisk='sleeping runtime state'; scenarioTags=@('monster','sleep','stun'); assertions=@('status_runtime_restores','creature_visual_state_restores','creature_intent_state_restores') },
     [pscustomobject]@{ id='lagavulin-matriarch'; title='Lagavulin Matriarch'; category='monster'; sourceFiles=@('LagavulinMatriarch.cs','AsleepPower.cs'); primaryRisk='sleeping runtime state'; scenarioTags=@('monster','sleep','wake'); assertions=@('status_runtime_restores','creature_visual_state_restores','creature_intent_state_restores') },
     [pscustomobject]@{ id='thieving-hopper'; title='Thieving Hopper'; category='monster'; sourceFiles=@('ThievingHopper.cs'); primaryRisk='hover and stun runtime'; scenarioTags=@('monster','hover','stun'); assertions=@('status_runtime_restores','creature_visual_state_restores') },
@@ -155,6 +159,7 @@ $officialRuntimePatterns = @(
     [pscustomobject]@{ id='reconcile:Tunneler.BurrowIntent'; category='reconciliation'; sourceFile='Tunneler.cs'; stateShape='burrowed power + transient stun reconciliation'; implemented=($implementedCodecIds -contains 'reconcile:Tunneler.BurrowIntent') },
     [pscustomobject]@{ id='reconcile:OwlMagistrate.FlightState'; category='reconciliation'; sourceFile='OwlMagistrate.cs'; stateShape='flight state reconciliation'; implemented=($implementedCodecIds -contains 'reconcile:OwlMagistrate.FlightState') },
     [pscustomobject]@{ id='reconcile:Queen.AmalgamBranch'; category='reconciliation'; sourceFile='Queen.cs'; stateShape='linked-creature branch reconciliation'; implemented=($implementedCodecIds -contains 'reconcile:Queen.AmalgamBranch') },
+    [pscustomobject]@{ id='reconcile:Osty.LocalPetConsistency'; category='reconciliation'; sourceFile='Osty.cs'; stateShape='local pet owner/position consistency'; implemented=($implementedCodecIds -contains 'reconcile:Osty.LocalPetConsistency') },
     [pscustomobject]@{ id='status:SlumberingBeetle.IsAwake'; category='status'; sourceFile='SlumberingBeetle.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:SlumberingBeetle.IsAwake') },
     [pscustomobject]@{ id='status:LagavulinMatriarch.IsAwake'; category='status'; sourceFile='LagavulinMatriarch.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:LagavulinMatriarch.IsAwake') },
     [pscustomobject]@{ id='status:BowlbugRock.IsOffBalance'; category='status'; sourceFile='BowlbugRock.cs'; stateShape='bool'; implemented=($implementedCodecIds -contains 'status:BowlbugRock.IsOffBalance') },
@@ -177,6 +182,7 @@ $officialRuntimePatterns = @(
     [pscustomobject]@{ id='topology:InfestedPrism'; category='topology'; sourceFile='InfestedPrism.cs'; stateShape='monster topology marker'; implemented=$true },
     [pscustomobject]@{ id='topology:QueenAmalgam'; category='topology'; sourceFile='Queen.cs'; stateShape='linked amalgam creature ref'; implemented=$true },
     [pscustomobject]@{ id='action:WellLaidPlans.choice'; category='action'; sourceFile='WellLaidPlansPower.cs'; stateShape='paused player choice'; implemented=(($implementedCodecIds -contains 'action:WellLaidPlans.choice') -or ($implementedCodecIds -contains 'action:from-hand')) },
+    [pscustomobject]@{ id='action:Toolbox.choice'; category='action'; sourceFile='Toolbox.cs'; stateShape='combat-start choose-a-card anchor'; implemented=(($implementedCodecIds -contains 'action:Toolbox.choice') -or ($implementedCodecIds -contains 'action:choose-a-card')) },
     [pscustomobject]@{ id='history:CombatHistory.entries'; category='history'; sourceFile='CombatHistory.cs'; stateShape='17 official entry types'; implemented=$true }
 )
 $officialRuntimePatterns | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $artifactsDir 'official-runtime-patterns.json')
@@ -189,6 +195,7 @@ $codecRegistrySeed = [pscustomobject]@{
         'power:ReattachPower.isReviving',
         'relic:PaelsLegion.affectedCardPlay',
         'action:WellLaidPlans.choice',
+        'action:Toolbox.choice',
         'reconcile:SlumberingBeetle.MoveIntent',
         'reconcile:LagavulinMatriarch.MoveIntent',
         'reconcile:GenericTransientStun',
@@ -328,6 +335,7 @@ $auditCoverageReport | Set-Content (Join-Path $reportsDir 'audit-coverage-report
 function Get-ScenarioDeclaredSupport([string]$ScenarioId) {
     switch ($ScenarioId) {
         'well-laid-plans' { return $officialRuntimePatterns.Where({ $_.id -eq 'action:WellLaidPlans.choice' }).implemented -contains $true }
+        'toolbox-combat-start' { return $officialRuntimePatterns.Where({ $_.id -eq 'action:Toolbox.choice' }).implemented -contains $true }
         'forgotten-ritual' { return $officialRuntimePatterns.Where({ $_.id -eq 'history:CombatHistory.entries' }).implemented -contains $true }
         'automation-power' { return $officialRuntimePatterns.Where({ $_.id -eq 'power:AutomationPower.cardsLeft' }).implemented -contains $true }
         'infested-prism' { return $officialRuntimePatterns.Where({ $_.id -eq 'power:VitalSparkPower.playersTriggeredThisTurn' }).implemented -contains $true }
@@ -338,6 +346,9 @@ function Get-ScenarioDeclaredSupport([string]$ScenarioId) {
         'owl-magistrate-flight' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:OwlMagistrate.IsFlying' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:OwlMagistrate.FlightState' }).implemented -contains $true) }
         'queen-soulbound' { return $officialRuntimePatterns.Where({ $_.id -eq 'power:ChainsOfBindingPower.boundCardPlayed' }).implemented -contains $true }
         'queen-amalgam-branch' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:Queen.HasAmalgamDied' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'topology:QueenAmalgam' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:Queen.AmalgamBranch' }).implemented -contains $true) }
+        'osty-summon-roundtrip' { return $officialRuntimePatterns.Where({ $_.id -eq 'reconcile:Osty.LocalPetConsistency' }).implemented -contains $true }
+        'osty-revive-roundtrip' { return $officialRuntimePatterns.Where({ $_.id -eq 'reconcile:Osty.LocalPetConsistency' }).implemented -contains $true }
+        'osty-enemy-hit-roundtrip' { return $officialRuntimePatterns.Where({ $_.id -eq 'reconcile:Osty.LocalPetConsistency' }).implemented -contains $true }
         'slumbering-beetle' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:SlumberingBeetle.IsAwake' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:SlumberingBeetle.MoveIntent' }).implemented -contains $true) }
         'lagavulin-matriarch' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:LagavulinMatriarch.IsAwake' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:LagavulinMatriarch.MoveIntent' }).implemented -contains $true) }
         'bowlbug-rock' { return ($officialRuntimePatterns.Where({ $_.id -eq 'status:BowlbugRock.IsOffBalance' }).implemented -contains $true) -and ($officialRuntimePatterns.Where({ $_.id -eq 'reconcile:GenericTransientStun' }).implemented -contains $true) }
@@ -369,11 +380,15 @@ $scenarioRunReport | Set-Content (Join-Path $reportsDir 'scenario-run-report.md'
 $unsupportedCapabilityIds = @($officialRuntimePatterns | Where-Object { -not $_.implemented } | ForEach-Object { $_.id })
 $runtimePendingIds = @(
     'well-laid-plans:runtime_closed_loop_pending',
+    'toolbox-combat-start:runtime_closed_loop_pending',
     'paels-legion:runtime_closed_loop_pending',
     'tunneler:runtime_closed_loop_pending',
     'owl-magistrate-flight:runtime_closed_loop_pending',
     'queen-soulbound:runtime_closed_loop_pending',
     'queen-amalgam-branch:runtime_closed_loop_pending',
+    'osty-summon-roundtrip:runtime_closed_loop_pending',
+    'osty-revive-roundtrip:runtime_closed_loop_pending',
+    'osty-enemy-hit-roundtrip:runtime_closed_loop_pending',
     'slumbering-beetle:runtime_closed_loop_pending',
     'lagavulin-matriarch:runtime_closed_loop_pending',
     'bowlbug-rock:runtime_closed_loop_pending',
@@ -399,3 +414,6 @@ $($unsupportedCapabilityLines -join "`r`n")
 $unsupportedCapabilitiesReport | Set-Content (Join-Path $reportsDir 'unsupported-capabilities-report.md')
 
 Write-Host "Generated audit artifacts under $CacheRoot"
+
+
+

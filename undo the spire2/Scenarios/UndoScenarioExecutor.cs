@@ -85,6 +85,7 @@ internal static class UndoScenarioExecutor
         new Dictionary<string, Func<UndoScenarioDefinition, RunState, CombatState, Task<UndoScenarioExecutionResult>>>(StringComparer.OrdinalIgnoreCase)
         {
             ["well-laid-plans"] = ExecuteWellLaidPlansScenarioAsync,
+            ["toolbox-combat-start"] = ExecuteToolboxCombatStartScenarioAsync,
             ["forgotten-ritual"] = ExecuteRoundtripScenarioAsync,
             ["automation-power"] = ExecuteRoundtripScenarioAsync,
             ["infested-prism"] = ExecuteRoundtripScenarioAsync,
@@ -95,6 +96,9 @@ internal static class UndoScenarioExecutor
             ["owl-magistrate-flight"] = ExecuteRoundtripScenarioAsync,
             ["queen-soulbound"] = ExecuteRoundtripScenarioAsync,
             ["queen-amalgam-branch"] = ExecuteRoundtripScenarioAsync,
+            ["osty-summon-roundtrip"] = ExecuteRoundtripScenarioAsync,
+            ["osty-revive-roundtrip"] = ExecuteRoundtripScenarioAsync,
+            ["osty-enemy-hit-roundtrip"] = ExecuteRoundtripScenarioAsync,
             ["slumbering-beetle"] = ExecuteRoundtripScenarioAsync,
             ["lagavulin-matriarch"] = ExecuteRoundtripScenarioAsync,
             ["bowlbug-rock"] = ExecuteRoundtripScenarioAsync,
@@ -326,7 +330,8 @@ internal static class UndoScenarioExecutor
             controller.Undo();
             bool restoreObserved = await WaitForHistoryMoveAsync(() => !controller.IsRestoring, controller);
             activeChoice = TryCaptureActiveChoiceSpec(controller);
-            primaryRestoreUsed = restoreObserved && string.Equals(UndoController.DebugGetLastInteractionStage(), "primary_restore", StringComparison.Ordinal);
+            string? restoreStage = UndoController.DebugGetLastInteractionStage();
+            primaryRestoreUsed = restoreObserved && (string.Equals(restoreStage, "primary_restore", StringComparison.Ordinal) || string.Equals(restoreStage, "primary_restore_anchor_reopened", StringComparison.Ordinal));
             retainSelectionReopened = IsSupportedChoiceUiActive() && activeChoice?.Kind == UndoChoiceKind.HandSelection;
             noHiddenChoiceAnchorSkip = UndoController.DebugGetHiddenChoiceAnchorSkipCount() == hiddenSkipCountBefore;
         }
@@ -381,6 +386,91 @@ internal static class UndoScenarioExecutor
         };
     }
 
+    private static async Task<UndoScenarioExecutionResult> ExecuteToolboxCombatStartScenarioAsync(UndoScenarioDefinition scenario, RunState runState, CombatState combatState)
+    {
+        UndoController controller = MainFile.Controller;
+        if (!controller.HasUndo)
+        {
+            return new UndoScenarioExecutionResult
+            {
+                Scenario = scenario,
+                Status = UndoScenarioExecutionStatus.Skipped,
+                Detail = "undo_history_required",
+                DeclaredSupported = false,
+                RuntimeClosedLoop = false
+            };
+        }
+
+        UndoSnapshot? latestUndoSnapshot = GetLatestUndoSnapshot(controller);
+        PausedChoiceState? pausedChoice = latestUndoSnapshot?.CombatState.ActionKernelState.PausedChoiceState;
+        RestoreCapabilityReport capability = UndoActionCodecRegistry.EvaluateCapability(pausedChoice);
+        bool choiceAnchorVisible = latestUndoSnapshot?.IsChoiceAnchor == true && latestUndoSnapshot.ChoiceSpec?.Kind == UndoChoiceKind.ChooseACard;
+        bool primaryChoiceSupported = capability.Result == RestoreCapabilityResult.Supported || choiceAnchorVisible;
+        int hiddenSkipCountBefore = UndoController.DebugGetHiddenChoiceAnchorSkipCount();
+        bool primaryRestoreUsed = false;
+        bool chooseACardReopened = false;
+        bool noHiddenChoiceAnchorSkip = true;
+
+        if (choiceAnchorVisible && primaryChoiceSupported)
+        {
+            controller.Undo();
+            bool restoreObserved = await WaitForHistoryMoveAsync(() => !controller.IsRestoring, controller);
+            UndoChoiceSpec? activeChoice = TryCaptureActiveChoiceSpec(controller);
+            string? restoreStage = UndoController.DebugGetLastInteractionStage();
+            primaryRestoreUsed = restoreObserved && (string.Equals(restoreStage, "primary_restore", StringComparison.Ordinal) || string.Equals(restoreStage, "primary_restore_anchor_reopened", StringComparison.Ordinal));
+            chooseACardReopened = IsSupportedChoiceUiActive() && activeChoice?.Kind == UndoChoiceKind.ChooseACard;
+            noHiddenChoiceAnchorSkip = UndoController.DebugGetHiddenChoiceAnchorSkipCount() == hiddenSkipCountBefore;
+        }
+        else
+        {
+            noHiddenChoiceAnchorSkip = UndoController.DebugGetHiddenChoiceAnchorSkipCount() == hiddenSkipCountBefore;
+        }
+
+        List<UndoScenarioAssertionResult> assertions =
+        [
+            new UndoScenarioAssertionResult
+            {
+                Assertion = "choice_anchor_visible",
+                Passed = choiceAnchorVisible,
+                Detail = latestUndoSnapshot == null ? "no_undo_snapshot" : $"isChoiceAnchor={latestUndoSnapshot.IsChoiceAnchor}; kind={latestUndoSnapshot.ChoiceSpec?.Kind.ToString() ?? "null"}"
+            },
+            new UndoScenarioAssertionResult
+            {
+                Assertion = "primary_choice_supported",
+                Passed = primaryChoiceSupported,
+                Detail = choiceAnchorVisible && capability.Result != RestoreCapabilityResult.Supported ? "choose_a_card_anchor_first" : (capability.Detail ?? capability.Result.ToString())
+            },
+            new UndoScenarioAssertionResult
+            {
+                Assertion = "primary_restore_used",
+                Passed = primaryRestoreUsed,
+                Detail = UndoController.DebugGetLastInteractionStage() ?? "no_restore_stage"
+            },
+            new UndoScenarioAssertionResult
+            {
+                Assertion = "choose_a_card_reopens",
+                Passed = chooseACardReopened,
+                Detail = chooseACardReopened ? "supported_choice_ui_active" : "supported_choice_ui_inactive"
+            },
+            new UndoScenarioAssertionResult
+            {
+                Assertion = "no_hidden_choice_anchor_skip",
+                Passed = noHiddenChoiceAnchorSkip,
+                Detail = noHiddenChoiceAnchorSkip ? "hidden_anchor_skip_not_observed" : "hidden_anchor_skip_observed"
+            }
+        ];
+
+        bool passed = assertions.All(static assertion => assertion.Passed);
+        return new UndoScenarioExecutionResult
+        {
+            Scenario = scenario,
+            Status = passed ? UndoScenarioExecutionStatus.Passed : UndoScenarioExecutionStatus.Failed,
+            Detail = passed ? "toolbox_primary_choice_runtime_closed" : "toolbox_primary_choice_runtime_incomplete",
+            Assertions = assertions,
+            DeclaredSupported = primaryChoiceSupported,
+            RuntimeClosedLoop = passed
+        };
+    }
     private static async Task<bool> WaitForHistoryMoveAsync(Func<bool> completion, UndoController controller, int timeoutMs = 5000)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -406,6 +496,11 @@ internal static class UndoScenarioExecutor
                     && CreatureHasPower(me.Creature, "WellLaidPlansPower")
                     && TryCaptureActiveChoiceSpec(MainFile.Controller)?.Kind == UndoChoiceKind.HandSelection,
                 "well_laid_plans_choice_boundary_required"),
+            "toolbox-combat-start" => Require(me != null
+                    && PlayerHasRelic(me, "Toolbox")
+                    && GetLatestUndoSnapshot(MainFile.Controller)?.IsChoiceAnchor == true
+                    && GetLatestUndoSnapshot(MainFile.Controller)?.ChoiceSpec?.Kind == UndoChoiceKind.ChooseACard,
+                "toolbox_choice_anchor_required"),
             "forgotten-ritual" => Require(ContainsCombatCard(runState, "ForgottenRitual"), "forgotten_ritual_card_required"),
             "automation-power" => Require(me != null && CreatureHasPower(me.Creature, "AutomationPower"), "automation_power_required"),
             "infested-prism" => Require(AnyMonsterType(combatState, "InfestedPrism") || AnyCreatureHasPower(combatState, "VitalSparkPower"), "infested_prism_required"),
@@ -416,6 +511,9 @@ internal static class UndoScenarioExecutor
             "owl-magistrate-flight" => Require(AnyMonsterType(combatState, "OwlMagistrate"), "owl_magistrate_required"),
             "queen-soulbound" => Require(me != null && AnyMonsterType(combatState, "Queen") && CreatureHasPower(me.Creature, "ChainsOfBindingPower"), "queen_soulbound_required"),
             "queen-amalgam-branch" => Require(AnyMonsterType(combatState, "Queen") && AnyMonsterType(combatState, "TorchHeadAmalgam"), "queen_and_amalgam_required"),
+            "osty-summon-roundtrip" => Require(me != null && IsLocalNecrobinder(me) && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "Osty")), "local_osty_pet_required"),
+            "osty-revive-roundtrip" => Require(me != null && IsLocalNecrobinder(me) && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "Osty")), "local_osty_pet_required"),
+            "osty-enemy-hit-roundtrip" => Require(me != null && IsLocalNecrobinder(me) && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "Osty")), "local_osty_pet_required"),
             "slumbering-beetle" => Require(AnyMonsterType(combatState, "SlumberingBeetle"), "slumbering_beetle_required"),
             "lagavulin-matriarch" => Require(AnyMonsterType(combatState, "LagavulinMatriarch"), "lagavulin_matriarch_required"),
             "bowlbug-rock" => Require(AnyMonsterType(combatState, "BowlbugRock"), "bowlbug_rock_required"),
@@ -448,6 +546,11 @@ internal static class UndoScenarioExecutor
     {
         MethodInfo? method = typeof(UndoController).GetMethod("CaptureCurrentCombatFullState", BindingFlags.Instance | BindingFlags.NonPublic);
         return method?.Invoke(controller, null) as UndoCombatFullState;
+    }
+
+    private static UndoSnapshot? GetLatestUndoSnapshot(UndoController controller)
+    {
+        return (typeof(UndoController).GetField("_pastSnapshots", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(controller) as LinkedList<UndoSnapshot>)?.First?.Value;
     }
 
     private static UndoChoiceSpec? TryCaptureActiveChoiceSpec(UndoController controller)
@@ -541,7 +644,7 @@ internal static class UndoScenarioExecutor
                 "exhaust_history_survives_undo" => CompareProjection(assertion, targetState.CombatHistoryState, redoState.CombatHistoryState, "combat_history_roundtrip"),
                 "gold_glow_matches_history" => CompareProjection(assertion, targetState.CombatHistoryState, redoState.CombatHistoryState, "history_backing_state_roundtrip"),
                 "cards_left_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.PowerRuntimeStates, redoState.RuntimeGraphState.PowerRuntimeStates, "power_runtime_roundtrip"),
-                "display_counter_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.PowerRuntimeStates, redoState.RuntimeGraphState.PowerRuntimeStates, "power_runtime_roundtrip"),
+                "display_counter_restores" => AssertAutomationDisplayCounterRestores(assertion, redoState),
                 "first_damage_only_triggers_once_after_undo" => CompareProjection(assertion, targetState.RuntimeGraphState.PowerRuntimeStates, redoState.RuntimeGraphState.PowerRuntimeStates, "power_runtime_roundtrip"),
                 "reviving_state_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
                 "segment_rejoins_correctly" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
@@ -551,6 +654,14 @@ internal static class UndoScenarioExecutor
                 "pet_owner_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
                 "no_duplicate_pet_after_undo" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
                 "pet_visual_state_restores" => AssertPaelsLegionVisualState(assertion),
+                "osty_owner_restores" => AssertOstyVisualState(assertion),
+                "osty_position_restores" => AssertOstyVisualState(assertion),
+                "osty_scale_restores" => AssertOstyVisualState(assertion),
+                "osty_block_track_restores" => AssertOstyVisualState(assertion),
+                "osty_state_display_rebound" => AssertOstyVisualState(assertion),
+                "no_disposed_block_subscription" => AssertOstyVisualState(assertion),
+                "no_restore_noop_potion_slot" => AssertNoPotionSlotRestoreNoop(assertion),
+                "no_post_restore_input_lock" => AssertInteractionStillPlayable(assertion),
                 "status_runtime_restores" => CompareProjection(assertion, ProjectCreatureStatusRuntime(targetState.CreatureStatusRuntimeStates), ProjectCreatureStatusRuntime(redoState.CreatureStatusRuntimeStates), "creature_status_runtime_roundtrip"),
                 "creature_visual_state_restores" => AssertCreatureStatusVisualState(assertion, scenario.Id),
                 "creature_intent_state_restores" => AssertCreatureIntentState(assertion, scenario.Id),
@@ -618,6 +729,156 @@ internal static class UndoScenarioExecutor
             Passed = false,
             Detail = "paels_legion_pet_missing"
         };
+    }
+
+    private static UndoScenarioAssertionResult AssertOstyVisualState(string assertion)
+    {
+        if (!TryGetLocalOstyVisualState(out Player? owner, out Creature? osty, out NCreature? ownerNode, out NCreature? ostyNode, out string detail))
+        {
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = false,
+                Detail = detail
+            };
+        }
+
+        if (assertion == "osty_owner_restores")
+        {
+            bool ownerConsistent = ReferenceEquals(owner.Osty, osty)
+                && owner.IsOstyAlive == osty.IsAlive
+                && owner.IsOstyMissing == !osty.IsAlive
+                && owner.PlayerCombatState?.Pets.Contains(osty) == true;
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = ownerConsistent,
+                Detail = $"owner_osty={(ReferenceEquals(owner.Osty, osty))}; alive={owner.IsOstyAlive}; missing={owner.IsOstyMissing}; in_pets={(owner.PlayerCombatState?.Pets.Contains(osty) == true)}"
+            };
+        }
+
+        if (assertion == "osty_block_track_restores")
+        {
+            object? stateDisplay = UndoReflectionUtil.FindField(ostyNode.GetType(), "_stateDisplay")?.GetValue(ostyNode);
+            Creature? trackedCreature = stateDisplay == null ? null : UndoReflectionUtil.FindField(stateDisplay.GetType(), "_blockTrackingCreature")?.GetValue(stateDisplay) as Creature;
+            bool passed = ReferenceEquals(trackedCreature, owner.Creature);
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = passed,
+                Detail = passed ? "tracked_owner_block_status" : $"tracked={(trackedCreature == null ? "null" : trackedCreature.GetType().Name)}"
+            };
+        }
+
+
+        if (assertion is "osty_state_display_rebound" or "no_disposed_block_subscription")
+        {
+            object? stateDisplay = UndoReflectionUtil.FindField(ostyNode.GetType(), "_stateDisplay")?.GetValue(ostyNode);
+            Creature? trackedCreature = stateDisplay == null ? null : UndoReflectionUtil.FindField(stateDisplay.GetType(), "_blockTrackingCreature")?.GetValue(stateDisplay) as Creature;
+            bool stateDisplayValid = stateDisplay is GodotObject stateDisplayObject && GodotObject.IsInstanceValid(stateDisplayObject);
+            bool passed = stateDisplayValid && ReferenceEquals(trackedCreature, owner.Creature);
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = passed,
+                Detail = $"state_display_valid={stateDisplayValid}; tracked={(trackedCreature == null ? "null" : trackedCreature.GetType().Name)}"
+            };
+        }
+
+        Vector2 expectedPosition = ownerNode.Position + NCreature.GetOstyOffsetFromPlayer(osty);
+        bool positionOk = ostyNode.Position.IsEqualApprox(expectedPosition);
+        float defaultScale = ostyNode.Visuals.DefaultScale;
+        float expectedScalar = Mathf.Lerp(Osty.ScaleRange.X, Osty.ScaleRange.Y, Mathf.Clamp((float)osty.MaxHp / 150f, 0f, 1f)) * defaultScale;
+        bool scaleOk = Mathf.IsEqualApprox(ostyNode.Visuals.Scale.X, expectedScalar) && Mathf.IsEqualApprox(ostyNode.Visuals.Scale.Y, expectedScalar);
+
+        return new UndoScenarioAssertionResult
+        {
+            Assertion = assertion,
+            Passed = assertion switch
+            {
+                "osty_position_restores" => positionOk,
+                "osty_scale_restores" => scaleOk,
+                _ => positionOk && scaleOk
+            },
+            Detail = $"position={ostyNode.Position}; expected_position={expectedPosition}; scale={ostyNode.Visuals.Scale}; expected_scale={expectedScalar}"
+        };
+    }
+
+    private static UndoScenarioAssertionResult AssertNoPotionSlotRestoreNoop(string assertion)
+    {
+        string? failureReason = GetLastRestoreFailureReason(MainFile.Controller);
+        bool passed = string.IsNullOrWhiteSpace(failureReason) || !failureReason.Contains("potion slot index", StringComparison.OrdinalIgnoreCase);
+        return new UndoScenarioAssertionResult
+        {
+            Assertion = assertion,
+            Passed = passed,
+            Detail = passed ? "no_potion_slot_restore_noop" : failureReason
+        };
+    }
+
+    private static UndoScenarioAssertionResult AssertInteractionStillPlayable(string assertion)
+    {
+        NCombatUi? ui = NCombatRoom.Instance?.Ui;
+        bool isSelecting = ui?.Hand?.IsInCardSelection == true;
+        bool handDisabled = ui?.Hand != null && (UndoReflectionUtil.FindField(ui.Hand.GetType(), "_isDisabled")?.GetValue(ui.Hand) as bool? == true);
+        bool passed = CombatManager.Instance.IsPlayPhase
+            && !isSelecting
+            && !handDisabled
+            && !CombatManager.Instance.PlayerActionsDisabled;
+        return new UndoScenarioAssertionResult
+        {
+            Assertion = assertion,
+            Passed = passed,
+            Detail = $"is_play_phase={CombatManager.Instance.IsPlayPhase}; selecting={isSelecting}; hand_disabled={handDisabled}; player_actions_disabled={CombatManager.Instance.PlayerActionsDisabled}"
+        };
+    }
+
+    private static bool TryGetLocalOstyVisualState(out Player? owner, out Creature? osty, out NCreature? ownerNode, out NCreature? ostyNode, out string detail)
+    {
+        owner = null;
+        osty = null;
+        ownerNode = null;
+        ostyNode = null;
+        detail = "osty_missing";
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatState == null || combatRoom == null)
+        {
+            detail = combatState == null ? "combat_state_missing" : "combat_room_missing";
+            return false;
+        }
+
+        owner = LocalContext.GetMe(combatState);
+        Player? localOwner = owner;
+        if (localOwner == null || !IsLocalNecrobinder(localOwner))
+        {
+            detail = "local_necrobinder_required";
+            return false;
+        }
+
+        osty = combatState.Allies.FirstOrDefault(creature => creature.PetOwner == localOwner && creature.Monster is Osty);
+        if (osty == null)
+        {
+            detail = "osty_creature_missing";
+            return false;
+        }
+
+        ownerNode = combatRoom.GetCreatureNode(owner.Creature);
+        ostyNode = combatRoom.GetCreatureNode(osty);
+        if (ownerNode == null || ostyNode == null)
+        {
+            detail = ownerNode == null ? "owner_node_missing" : "osty_node_missing";
+            return false;
+        }
+
+        detail = "matched";
+        return true;
+    }
+
+    private static bool IsLocalNecrobinder(Player player)
+    {
+        return string.Equals(player.Character.GetType().Name, "Necrobinder", StringComparison.Ordinal);
     }
 
     private static object ProjectCreatureStatusRuntime(IReadOnlyList<CreatureStatusRuntimeState> states)
@@ -717,6 +978,10 @@ internal static class UndoScenarioExecutor
                     IReadOnlyList<string> expectedAnimations = visualState == UndoSpecialCreatureVisualNormalizer.OwlMagistrateVisualState.Flying ? ["fly_loop"] : ["idle_loop"];
                     return BuildAnimationAssertion(assertion, animation, expectedAnimations, actualVisible: nodeVisible, expectedVisible: true);
                 }
+                case "osty-summon-roundtrip" when creature.Monster is Osty:
+                case "osty-revive-roundtrip" when creature.Monster is Osty:
+                case "osty-enemy-hit-roundtrip" when creature.Monster is Osty:
+                    return AssertOstyVisualState(assertion);
                 case "bowlbug-rock" when creature.Monster is BowlbugRock bowlbugRock:
                     return BuildAnimationAssertion(assertion, animation, bowlbugRock.IsOffBalance ? ["stunned_loop"] : ["idle_loop"], actualVisible: nodeVisible, expectedVisible: true);
                 case "thieving-hopper" when creature.Monster is ThievingHopper thievingHopper:
@@ -942,6 +1207,47 @@ internal static class UndoScenarioExecutor
         };
     }
 
+    private static UndoScenarioAssertionResult AssertAutomationDisplayCounterRestores(string assertion, UndoCombatFullState redoState)
+    {
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? me = combatState == null ? null : LocalContext.GetMe(combatState);
+        AutomationPower? power = me?.Creature.Powers.OfType<AutomationPower>().FirstOrDefault();
+        if (power == null)
+        {
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = false,
+                Detail = "automation_power_missing"
+            };
+        }
+
+        string? ownerCreatureKey = UndoStableRefs.TryResolveCreatureKey(combatState!.Creatures, me!.Creature);
+        int? expectedDisplayAmount = redoState.RuntimeGraphState.PowerRuntimeStates
+            .Where(state => state.OwnerCreatureKey == ownerCreatureKey && state.PowerId.Entry == "AutomationPower")
+            .SelectMany(state => state.ComplexStates)
+            .OfType<UndoIntRuntimeComplexState>()
+            .FirstOrDefault(state => state.CodecId == "power:AutomationPower.cardsLeft")?.Value;
+        if (expectedDisplayAmount == null)
+        {
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = false,
+                Detail = "automation_runtime_state_missing"
+            };
+        }
+
+        bool passed = power.DisplayAmount == expectedDisplayAmount.Value;
+        return new UndoScenarioAssertionResult
+        {
+            Assertion = assertion,
+            Passed = passed,
+            Detail = passed
+                ? $"display_amount={power.DisplayAmount}"
+                : $"expected_display_amount={expectedDisplayAmount.Value}; actual_display_amount={power.DisplayAmount}"
+        };
+    }
     private static UndoScenarioAssertionResult CompareProjection(string assertion, object? expected, object? actual, string detail)
     {
         string expectedJson = JsonSerializer.Serialize(expected, JsonOptions);
@@ -968,6 +1274,7 @@ internal static class UndoScenarioExecutor
         List<string> required = scenario.Id switch
         {
             "well-laid-plans" => ["action:WellLaidPlans.choice"],
+            "toolbox-combat-start" => ["action:Toolbox.choice"],
             "forgotten-ritual" => ["history:CombatHistory.entries"],
             "automation-power" => ["power:AutomationPower.cardsLeft"],
             "infested-prism" => ["power:VitalSparkPower.playersTriggeredThisTurn", "topology:InfestedPrism"],
@@ -978,6 +1285,9 @@ internal static class UndoScenarioExecutor
             "owl-magistrate-flight" => ["status:OwlMagistrate.IsFlying", "reconcile:OwlMagistrate.FlightState"],
             "queen-soulbound" => ["power:ChainsOfBindingPower.boundCardPlayed"],
             "queen-amalgam-branch" => ["status:Queen.HasAmalgamDied", "topology:QueenAmalgam", "reconcile:Queen.AmalgamBranch"],
+            "osty-summon-roundtrip" => ["reconcile:Osty.LocalPetConsistency"],
+            "osty-revive-roundtrip" => ["reconcile:Osty.LocalPetConsistency"],
+            "osty-enemy-hit-roundtrip" => ["reconcile:Osty.LocalPetConsistency"],
             "slumbering-beetle" => ["status:SlumberingBeetle.IsAwake", "reconcile:SlumberingBeetle.MoveIntent"],
             "lagavulin-matriarch" => ["status:LagavulinMatriarch.IsAwake", "reconcile:LagavulinMatriarch.MoveIntent"],
             "bowlbug-rock" => ["status:BowlbugRock.IsOffBalance", "reconcile:GenericTransientStun"],
@@ -999,6 +1309,13 @@ internal static class UndoScenarioExecutor
         return required.Where(requiredId => !implemented.Contains(requiredId)).ToList();
     }
 }
+
+
+
+
+
+
+
 
 
 

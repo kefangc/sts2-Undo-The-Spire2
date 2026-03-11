@@ -58,6 +58,9 @@ internal static class UndoActionCodecRegistry
 
         if (state.ChoiceId == null)
         {
+            if (state.ChoiceKind == UndoChoiceKind.ChooseACard && TryGetCodec(state) != null)
+                return RestoreCapabilityReport.SupportedReport("paused_choice_primary_anchor_reopen");
+
             return new RestoreCapabilityReport
             {
                 Result = RestoreCapabilityResult.FallbackToSyntheticChoice,
@@ -218,3 +221,4 @@ internal static class UndoActionCodecRegistry
         }
     }
 }
+
