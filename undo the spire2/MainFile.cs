@@ -13,9 +13,12 @@ public partial class MainFile : Node
     public static void Initialize()
     {
         UndoDebugLog.Initialize();
+        UndoModSettings.Initialize();
         Harmony harmony = new(ModId);
         harmony.PatchAll(Assembly.GetExecutingAssembly());
         Logger.Info("UndoTheSpire2 patches applied.");
         UndoDebugLog.Write($"MainFile initialized. Debug log path={UndoDebugLog.CurrentPath}");
     }
 }
+
+

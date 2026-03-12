@@ -12,7 +12,7 @@ namespace UndoTheSpire2;
 
 internal sealed class UndoCombatFullState
 {
-    public const int CurrentSchemaVersion = 6;
+    public const int CurrentSchemaVersion = 7;
 
     public UndoCombatFullState(
         NetFullCombatState fullState,
@@ -38,7 +38,8 @@ internal sealed class UndoCombatFullState
         UndoCombatCardDbState? combatCardDbState = null,
         IReadOnlyList<UndoPlayerOrbState>? playerOrbStates = null,
         IReadOnlyList<UndoPlayerDeckState>? playerDeckStates = null,
-        int schemaVersion = CurrentSchemaVersion)
+        int schemaVersion = CurrentSchemaVersion,
+        IReadOnlyList<UndoChoiceBranchState>? choiceBranchStates = null)
     {
         SchemaVersion = schemaVersion;
         FullState = fullState;
@@ -56,6 +57,7 @@ internal sealed class UndoCombatFullState
         CombatCardDbState = combatCardDbState ?? new UndoCombatCardDbState();
         PlayerOrbStates = playerOrbStates ?? [];
         PlayerDeckStates = playerDeckStates ?? [];
+        ChoiceBranchStates = choiceBranchStates ?? [];
         CardCostStates = cardCostStates;
         CardRuntimeStates = cardRuntimeStates ?? [];
         PowerRuntimeStates = powerRuntimeStates ?? [];
@@ -105,6 +107,8 @@ internal sealed class UndoCombatFullState
     public IReadOnlyList<UndoPlayerOrbState> PlayerOrbStates { get; }
 
     public IReadOnlyList<UndoPlayerDeckState> PlayerDeckStates { get; }
+
+    public IReadOnlyList<UndoChoiceBranchState> ChoiceBranchStates { get; }
 
     public IReadOnlyList<UndoPlayerPileCardCostState> CardCostStates { get; }
 
@@ -157,4 +161,17 @@ internal sealed class UndoPlayerDeckState
     public required ulong PlayerNetId { get; init; }
 
     public required IReadOnlyList<SerializableCard> Cards { get; init; }
+}
+
+internal sealed class UndoChoiceBranchState
+{
+    public required UndoChoiceResultKey ChoiceResultKey { get; init; }
+
+    public required UndoCombatFullState CombatState { get; init; }
+
+    public required int ReplayEventCount { get; init; }
+
+    public required UndoActionKind ActionKind { get; init; }
+
+    public required string ActionLabel { get; init; }
 }

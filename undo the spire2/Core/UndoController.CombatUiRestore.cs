@@ -1,0 +1,704 @@
+// Coordinates undo/redo history and restore transactions.
+// Capture/restore details should live in dedicated services; this type is the orchestrator.
+using System.Reflection;
+using Godot;
+using MegaCrit.Sts2.Core.CardSelection;
+using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Combat.History.Entries;
+using MegaCrit.Sts2.Core.Context;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Enchantments;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
+using MegaCrit.Sts2.Core.Entities.Models;
+using MegaCrit.Sts2.Core.Entities.Orbs;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.Potions;
+using MegaCrit.Sts2.Core.Entities.Relics;
+using MegaCrit.Sts2.Core.Entities.UI;
+using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Localization;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Models.Orbs;
+using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Multiplayer.Replay;
+using MegaCrit.Sts2.Core.Multiplayer.Serialization;
+using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Audio;
+using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
+using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.Orbs;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
+using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
+using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Nodes.Vfx;
+using MegaCrit.Sts2.Core.Nodes.Vfx.Cards;
+using MegaCrit.Sts2.Core.Nodes.Potions;
+using MegaCrit.Sts2.Core.Nodes.Relics;
+using MegaCrit.Sts2.Core.Rooms;
+using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Settings;
+using MegaCrit.Sts2.Core.Assets;
+using MegaCrit.Sts2.Core.Entities.Actions;
+using MegaCrit.Sts2.Core.Multiplayer;
+using MegaCrit.Sts2.Core.Saves.Runs;
+
+namespace UndoTheSpire2;
+
+// Combat UI rebuild and presentation normalization after restore.
+public sealed partial class UndoController
+{
+    private static async Task RefreshCombatUiAsync(CombatState combatState)
+    {
+        foreach (Player player in combatState.Players)
+            player.PlayerCombatState?.RecalculateCardValues();
+        UndoRuntimeStateCodecRegistry.RefreshPowerDisplays(combatState);
+        if (NCombatRoom.Instance != null)
+            UndoSpecialCreatureVisualNormalizer.DetachStateDisplayTracking(NCombatRoom.Instance);
+        ClearTransientCardVisuals();
+        NormalizeCombatInteractionState(combatState);
+        RebuildCombatCreatureNodesIfNeeded(combatState);
+        RefreshPlayerOrbManagers(combatState);
+        RestoreThievingHopperDisplayCards(combatState);
+        RebuildCombatUiCards(combatState);
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom != null)
+        {
+            Player? me = LocalContext.GetMe(combatState);
+            ForceCombatUiInteractiveState(combatRoom.Ui, combatState, me);
+            if (me != null)
+                RefreshCombatPileCounts(combatRoom.Ui, me);
+            foreach (Creature creature in combatState.Enemies)
+            {
+                NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+                if (creatureNode == null)
+                    continue;
+
+                bool isReattaching = creature.GetPower<ReattachPower>() is ReattachPower reattachPower
+                    && FindProperty(reattachPower.GetType(), "IsReviving")?.GetValue(reattachPower) is bool isReviving
+                    && isReviving;
+
+                if (creature.IsDead || isReattaching)
+                    ClearCreatureIntentUi(creatureNode);
+                else
+                    await creatureNode.RefreshIntents();
+            }
+
+            SnapEnemyCreatureNodesToSlots(combatState);
+            UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
+        }
+        await WaitOneFrameAsync();
+        if (NCombatRoom.Instance != null)
+        {
+            ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, LocalContext.GetMe(combatState));
+            SnapEnemyCreatureNodesToSlots(combatState);
+            UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
+        }
+
+        NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoRefreshCombatUiAsync"]);
+    }
+
+    private static void RefreshPlayerOrbManagers(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        foreach (Player player in combatState.Players)
+        {
+            if (player.PlayerCombatState == null)
+                continue;
+
+            NOrbManager? orbManager = combatRoom.GetCreatureNode(player.Creature)?.OrbManager;
+            if (orbManager == null)
+                continue;
+
+            RebuildOrbManagerNodes(orbManager, player.PlayerCombatState.OrbQueue);
+        }
+    }
+
+    private static void RebuildOrbManagerNodes(NOrbManager orbManager, OrbQueue orbQueue)
+    {
+        Control? orbContainer = GetPrivateFieldValue<Control>(orbManager, "_orbContainer");
+        System.Collections.IList? orbNodes = GetPrivateFieldValue<System.Collections.IList>(orbManager, "_orbs");
+        if (orbContainer == null || orbNodes == null)
+            return;
+
+        if (OrbManagerMatchesState(orbNodes, orbQueue))
+        {
+            orbManager.UpdateVisuals(OrbEvokeType.None);
+            return;
+        }
+
+        GetPrivateFieldValue<Tween>(orbManager, "_curTween")?.Kill();
+        SetPrivateFieldValue(orbManager, "_curTween", null);
+        ClearNodeChildren(orbContainer);
+        orbNodes.Clear();
+
+        for (int i = 0; i < orbQueue.Capacity; i++)
+        {
+            NOrb orbNode = NOrb.Create(orbManager.IsLocal);
+            orbContainer.AddChildSafely(orbNode);
+            orbNodes.Add(orbNode);
+            orbNode.Position = Vector2.Zero;
+        }
+
+        for (int i = 0; i < orbQueue.Orbs.Count; i++)
+        {
+            if (orbNodes[i] is not NOrb orbNode)
+                continue;
+
+            orbNode.ReplaceOrb(orbQueue.Orbs[i]);
+            FinalizeOrbNodeVisuals(orbNode);
+        }
+
+        LayoutOrbManagerNodesInstantly(orbManager, orbNodes, orbQueue.Capacity);
+        InvokePrivateMethod(orbManager, "UpdateControllerNavigation");
+        orbManager.UpdateVisuals(OrbEvokeType.None);
+    }
+
+    private static void LayoutOrbManagerNodesInstantly(NOrbManager orbManager, System.Collections.IList orbNodes, int capacity)
+    {
+        if (capacity <= 0)
+            return;
+
+        float spread = 125f;
+        float step = capacity > 1 ? spread / (capacity - 1) : 0f;
+        float radius = Mathf.Lerp(225f, 300f, (capacity - 3f) / 7f);
+        if (!orbManager.IsLocal)
+            radius *= 0.75f;
+
+        for (int i = 0; i < capacity; i++)
+        {
+            if (orbNodes[i] is not NOrb orbNode)
+                continue;
+
+            float angle = float.DegreesToRadians(-25f - spread);
+            orbNode.Position = new Vector2(-Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
+            spread -= step;
+        }
+    }
+
+    private static void FinalizeOrbNodeVisuals(NOrb orbNode)
+    {
+        GetPrivateFieldValue<Tween>(orbNode, "_curTween")?.Kill();
+        SetPrivateFieldValue(orbNode, "_curTween", null);
+        if (GetPrivateFieldValue<Node2D>(orbNode, "_sprite") is Node2D sprite)
+            sprite.Scale = Vector2.One;
+    }
+
+    private static bool OrbManagerMatchesState(System.Collections.IList orbNodes, OrbQueue orbQueue)
+    {
+        if (orbNodes.Count != orbQueue.Capacity)
+            return false;
+
+        for (int i = 0; i < orbQueue.Orbs.Count; i++)
+        {
+            if (orbNodes[i] is not NOrb orbNode || !ReferenceEquals(orbNode.Model, orbQueue.Orbs[i]))
+                return false;
+        }
+
+        for (int i = orbQueue.Orbs.Count; i < orbNodes.Count; i++)
+        {
+            if (orbNodes[i] is not NOrb orbNode || orbNode.Model != null)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static void RestoreThievingHopperDisplayCards(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        foreach (Creature creature in combatState.Enemies)
+        {
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            if (creatureNode == null)
+                continue;
+
+            if (!creatureNode.HasNode("%StolenCardPos"))
+                continue;
+
+            Marker2D? stolenCardPos = creatureNode.GetNodeOrNull<Marker2D>("%StolenCardPos");
+            if (stolenCardPos == null)
+                continue;
+
+            ClearNodeChildren(stolenCardPos);
+            SwipePower? swipePower = creature.Powers.OfType<SwipePower>().FirstOrDefault(static power => power.StolenCard != null);
+            if (swipePower?.StolenCard == null)
+                continue;
+
+            if (swipePower.StolenCard.Owner == null && swipePower.Target?.Player != null)
+                swipePower.StolenCard.Owner = swipePower.Target.Player;
+
+            NCard? cardNode = NCard.Create(swipePower.StolenCard, ModelVisibility.Visible);
+            if (cardNode == null)
+                continue;
+
+            stolenCardPos.AddChild(cardNode);
+            cardNode.Position += cardNode.Size * 0.5f;
+            cardNode.UpdateVisuals(PileType.Deck, CardPreviewMode.Normal);
+        }
+    }
+    private static void NormalizeCombatInteractionState(CombatState combatState)
+    {
+        NTargetManager.Instance?.CancelTargeting();
+        RunManager.Instance.HoveredModelTracker.OnLocalCardDeselected();
+        RunManager.Instance.HoveredModelTracker.OnLocalCardUnhovered();
+        ClearCombatManagerCollection("_playersReadyToEndTurn");
+        ClearCombatManagerCollection("_playersReadyToBeginEnemyTurn");
+        ClearCombatManagerCollection("_playersTakingExtraTurn");
+        bool isPlayerTurn = combatState.CurrentSide == CombatSide.Player;
+        SetCombatManagerProperty("IsPlayPhase", isPlayerTurn);
+        SetCombatManagerProperty("IsEnemyTurnStarted", !isPlayerTurn);
+        SetCombatManagerProperty("EndingPlayerTurnPhaseOne", false);
+        SetCombatManagerProperty("EndingPlayerTurnPhaseTwo", false);
+        SetCombatManagerProperty("PlayerActionsDisabled", !isPlayerTurn);
+        Player? me = LocalContext.GetMe(combatState);
+        if (me != null && isPlayerTurn)
+            CombatManager.Instance.UndoReadyToEndTurn(me);
+    }
+    private static void RebuildCombatUiCards(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+        NCombatUi ui = combatRoom.Ui;
+        ResetPlayerHandUi(ui.Hand);
+        ClearPlayQueueUi(ui.PlayQueue);
+        ClearNodeChildren(ui.PlayContainer);
+        Player? me = LocalContext.GetMe(combatState);
+        if (me == null)
+            return;
+        foreach (CardModel card in PileType.Hand.GetPile(me).Cards)
+            ui.Hand.Add(CreateCardNode(card, PileType.Hand), -1);
+        SnapHandHolders(ui.Hand);
+        foreach (CardModel card in PileType.Play.GetPile(me).Cards)
+            ui.AddToPlayContainer(CreateCardNode(card, PileType.Play));
+    }
+
+    private static void RebuildCombatCreatureNodesIfNeeded(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        List<Creature> creatures = combatState.Creatures.ToList();
+        List<NCreature> creatureNodes = combatRoom.CreatureNodes.ToList();
+        List<NCreature> removingNodes = combatRoom.RemovingCreatureNodes.ToList();
+        Control? encounterSlots = GetPrivateFieldValue<Control>(combatRoom, "<EncounterSlots>k__BackingField")
+            ?? GetPrivateFieldValue<Control>(combatRoom, "EncounterSlots");
+        bool hasInvalidEnemySlots = combatState.Enemies.Any(creature =>
+            !string.IsNullOrWhiteSpace(creature.SlotName)
+            && (encounterSlots == null || !encounterSlots.HasNode(creature.SlotName)));
+        bool forceRebuild = combatState.Enemies.Any(static creature => creature.HasPower<ReattachPower>());
+        bool slotPositionMismatch = false;
+        if (!hasInvalidEnemySlots && encounterSlots != null)
+        {
+            foreach (Creature creature in combatState.Enemies)
+            {
+                if (string.IsNullOrWhiteSpace(creature.SlotName))
+                    continue;
+
+                NCreature? node = combatRoom.GetCreatureNode(creature);
+                if (node == null || !encounterSlots.HasNode(creature.SlotName))
+                    continue;
+
+                Vector2 expectedPosition = encounterSlots.GetNode<Marker2D>(creature.SlotName).GlobalPosition;
+                if (node.GlobalPosition.DistanceTo(expectedPosition) > 1f)
+                {
+                    slotPositionMismatch = true;
+                    break;
+                }
+            }
+        }
+
+        bool topologyMismatch = forceRebuild
+            || creatureNodes.Count != creatures.Count
+            || removingNodes.Count > 0
+            || creatures.Any(creature => combatRoom.GetCreatureNode(creature) == null)
+            || slotPositionMismatch
+            || hasInvalidEnemySlots;
+        if (!topologyMismatch)
+            return;
+
+        foreach (NCreature node in creatureNodes.Concat(removingNodes).Distinct())
+        {
+            node.GetParent()?.RemoveChild(node);
+            node.QueueFreeSafely();
+        }
+
+        GetPrivateFieldValue<System.Collections.IList>(combatRoom, "_creatureNodes")?.Clear();
+        GetPrivateFieldValue<System.Collections.IList>(combatRoom, "_removingCreatureNodes")?.Clear();
+
+        if (GetPrivateFieldValue<Control>(combatRoom, "_allyContainer") is { } allyContainer)
+            ClearNodeChildren(allyContainer);
+
+        if (GetPrivateFieldValue<Control>(combatRoom, "_enemyContainer") is { } enemyContainer)
+            ClearNodeChildren(enemyContainer);
+
+        SetPrivatePropertyValue(combatRoom, "EncounterSlots", null);
+        InvokePrivateMethod(combatRoom, "CreateAllyNodes");
+        if (hasInvalidEnemySlots)
+            RebuildEnemyNodesWithFallbackLayout(combatRoom, combatState);
+        else
+            InvokePrivateMethod(combatRoom, "CreateEnemyNodes");
+        InvokePrivateMethod(combatRoom, "AdjustCreatureScaleForAspectRatio");
+        InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
+    }
+
+    private static void RebuildEnemyNodesWithFallbackLayout(NCombatRoom combatRoom, CombatState combatState)
+    {
+        Dictionary<Creature, string?> originalSlots = combatState.Enemies.ToDictionary(static creature => creature, static creature => creature.SlotName);
+        foreach (Creature creature in combatState.Enemies)
+            creature.SlotName = null;
+
+        foreach (Creature creature in combatState.Enemies)
+            combatRoom.AddCreature(creature);
+
+        foreach ((Creature creature, string? slotName) in originalSlots)
+            creature.SlotName = slotName;
+
+        List<NCreature> enemyNodes = combatState.Enemies
+            .Select(combatRoom.GetCreatureNode)
+            .Where(static node => node != null)
+            .Cast<NCreature>()
+            .ToList();
+        InvokePrivateMethod(combatRoom, "PositionEnemies", enemyNodes, GetCombatRoomEncounterScaling(combatRoom));
+        InvokePrivateMethod(combatRoom, "RandomizeEnemyScalesAndHues");
+    }
+
+    private static float GetCombatRoomEncounterScaling(NCombatRoom combatRoom)
+    {
+        object? visuals = GetPrivateFieldValue<object>(combatRoom, "_visuals");
+        object? encounter = visuals == null ? null : FindProperty(visuals.GetType(), "Encounter")?.GetValue(visuals);
+        object? scaling = encounter == null ? null : FindMethod(encounter.GetType(), "GetCameraScaling")?.Invoke(encounter, null);
+        return scaling is float floatScaling ? floatScaling : 1f;
+    }
+    private static void ResetPlayerHandUi(NPlayerHand hand)
+    {
+        InvokePrivateMethod(hand, "CancelHandSelectionIfNecessary");
+        hand.CancelAllCardPlay();
+        hand.PeekButton.SetPeeking(false);
+        hand.PeekButton.Disable();
+        ClearTween(hand, "_animInTween");
+        ClearTween(hand, "_animOutTween");
+        ClearTween(hand, "_animEnableTween");
+        ClearTween(hand, "_selectedCardScaleTween");
+        RestoreSelectedHandCardsToHand(hand);
+        Node? currentCardPlay = GetPrivateFieldValue<Node>(hand, "_currentCardPlay");
+        if (currentCardPlay != null && GodotObject.IsInstanceValid(currentCardPlay))
+        {
+            currentCardPlay.GetParent()?.RemoveChild(currentCardPlay);
+            currentCardPlay.QueueFree();
+        }
+
+        GetPrivateFieldValue<System.Collections.IDictionary>(hand, "_holdersAwaitingQueue")?.Clear();
+        GetPrivateFieldValue<System.Collections.IList>(hand, "_selectedCards")?.Clear();
+        SetPrivateFieldValue(hand, "_currentCardPlay", null);
+        SetPrivateFieldValue(hand, "_draggedHolderIndex", -1);
+        SetPrivateFieldValue(hand, "_lastFocusedHolderIdx", -1);
+        SetPrivateFieldValue(hand, "_currentMode", NPlayerHand.Mode.Play);
+        SetPrivateFieldValue(hand, "_isDisabled", false);
+        SetPrivateFieldValue(hand, "_selectionCompletionSource", null);
+        SetPrivateFieldValue(hand, "_currentSelectionFilter", null);
+        SetPrivateFieldValue(hand, "_prefs", default(CardSelectorPrefs));
+        SetPrivatePropertyValue(hand, "FocusedHolder", null);
+        hand.CardHolderContainer.FocusMode = Control.FocusModeEnum.All;
+        hand.Position = GetStaticFieldValue<Vector2>(typeof(NPlayerHand), "_showPosition");
+        hand.Modulate = Colors.White;
+        ClearNodeChildren(hand.CardHolderContainer);
+        ResetSelectedHandCardContainerState(hand);
+        HideControl(hand, "%SelectModeBackstop", Control.MouseFilterEnum.Ignore);
+        HideControl(hand, "%UpgradePreviewContainer");
+        HideControl(hand, "%SelectionHeader");
+        if (GetPrivateFieldValue<object>(hand, "_upgradePreview") is { } upgradePreview)
+            SetPrivatePropertyValue(upgradePreview, "Card", null);
+    }
+    private static void ClearPlayQueueUi(NCardPlayQueue playQueue)
+    {
+        GetPrivateFieldValue<System.Collections.IList>(playQueue, "_playQueue")?.Clear();
+        ClearNodeChildren(playQueue);
+    }
+    private static void RefreshCombatPileCounts(NCombatUi ui, Player player)
+    {
+        RefreshCombatPileCount(ui.DrawPile, PileType.Draw.GetPile(player).Cards.Count);
+        RefreshCombatPileCount(ui.DiscardPile, PileType.Discard.GetPile(player).Cards.Count);
+        RefreshCombatPileCount(ui.ExhaustPile, PileType.Exhaust.GetPile(player).Cards.Count);
+    }
+    private static void RefreshCombatPileCount(Node pileNode, int count)
+    {
+        SetPrivateFieldValue(pileNode, "_currentCount", count);
+        object? countLabel = GetPrivateFieldValue<object>(pileNode, "_countLabel");
+        countLabel?.GetType().GetMethod("SetTextAutoSize", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(countLabel, [count.ToString()]);
+    }
+    private static void ForceCombatUiInteractiveState(NCombatUi ui, CombatState combatState, Player? me)
+    {
+        SetPrivateFieldValue(ui.Hand, "_combatState", combatState);
+        SetHandPresentation(ui.Hand, combatState.CurrentSide == CombatSide.Player && me != null && me.Creature.IsAlive);
+        ui.Hand.EnableControllerNavigation();
+        ui.Hand.ForceRefreshCardIndices();
+        SnapHandHolders(ui.Hand);
+        ui.EndTurnButton.Initialize(combatState);
+        ForceEndTurnButtonState(ui.EndTurnButton, combatState, me);
+        WriteInteractionLog("force_ui_interactive", $"side={combatState.CurrentSide} me={(me == null ? "null" : me.NetId)}");
+    }
+    private static void SetHandPresentation(NPlayerHand hand, bool shouldBeEnabled)
+    {
+        ClearTween(hand, "_animInTween");
+        ClearTween(hand, "_animOutTween");
+        ClearTween(hand, "_animEnableTween");
+        hand.Position = shouldBeEnabled
+            ? GetStaticFieldValue<Vector2>(typeof(NPlayerHand), "_showPosition")
+            : GetStaticFieldValue<Vector2>(typeof(NPlayerHand), "_disablePosition");
+        hand.Modulate = shouldBeEnabled
+            ? Colors.White
+            : GetStaticFieldValue<Color>(typeof(NPlayerHand), "_disableModulate");
+        SetPrivateFieldValue(hand, "_isDisabled", !shouldBeEnabled);
+        hand.CardHolderContainer.FocusMode = Control.FocusModeEnum.All;
+    }
+    private static void ForceEndTurnButtonState(NEndTurnButton endTurnButton, CombatState combatState, Player? me)
+    {
+        ClearTween(endTurnButton, "_positionTween");
+        ClearTween(endTurnButton, "_hoverTween");
+        ClearTween(endTurnButton, "_glowEnableTween");
+        ClearTween(endTurnButton, "_glowVfxTween");
+        FieldInfo? stateField = FindField(endTurnButton.GetType(), "_state");
+        if (combatState.CurrentSide == CombatSide.Player && me != null && me.Creature.IsAlive)
+        {
+            endTurnButton.Position = GetPrivatePropertyValue<Vector2>(endTurnButton, "ShowPos");
+            if (stateField != null)
+                stateField.SetValue(endTurnButton, Enum.ToObject(stateField.FieldType, 0));
+            InvokePrivateMethod(endTurnButton, "AfterPlayerUnendedTurn", me);
+        }
+        else
+        {
+            endTurnButton.Position = GetPrivatePropertyValue<Vector2>(endTurnButton, "HidePos");
+            if (stateField != null)
+                stateField.SetValue(endTurnButton, Enum.ToObject(stateField.FieldType, 2));
+        }
+        endTurnButton.RefreshEnabled();
+    }
+    private static void SnapHandHolders(NPlayerHand hand)
+    {
+        foreach (Node child in hand.CardHolderContainer.GetChildren())
+        {
+            if (child is not NHandCardHolder holder)
+                continue;
+            holder.SetDefaultTargets();
+            holder.Position = holder.TargetPosition;
+            holder.SetAngleInstantly(holder.TargetAngle);
+            object? targetScale = FindField(holder.GetType(), "_targetScale")?.GetValue(holder);
+            holder.SetScaleInstantly(targetScale is Vector2 scale ? scale : Vector2.One);
+            holder.SetClickable(true);
+            holder.FocusMode = Control.FocusModeEnum.All;
+            holder.Hitbox.SetEnabled(true);
+            holder.Hitbox.MouseFilter = Control.MouseFilterEnum.Stop;
+            holder.ZIndex = 0;
+        }
+    }
+    private static void ClearTween(object instance, string fieldName)
+    {
+        if (GetPrivateFieldValue<Tween>(instance, fieldName) is { } tween)
+            tween.Kill();
+    }
+
+    private static bool IsTweenRunning(object instance, string fieldName)
+    {
+        if (GetPrivateFieldValue<Tween>(instance, fieldName) is not { } tween)
+            return false;
+
+        return GodotObject.IsInstanceValid(tween) && tween.IsRunning();
+    }
+
+    private static bool ContainsDescendantOfType<TNode>(Node? node) where TNode : Node
+    {
+        if (node == null || !GodotObject.IsInstanceValid(node))
+            return false;
+
+        foreach (Node child in node.GetChildren())
+        {
+            if (child is TNode)
+                return true;
+
+            if (ContainsDescendantOfType<TNode>(child))
+                return true;
+        }
+
+        return false;
+    }
+    private static void CaptureSelectedHandContainerDefaults(NPlayerHand hand)
+    {
+        NSelectedHandCardContainer? selectedContainer = GetPrivateFieldValue<NSelectedHandCardContainer>(hand, "_selectedHandCardContainer")
+            ?? hand.GetNodeOrNull<NSelectedHandCardContainer>("%SelectedHandCardContainer");
+        if (selectedContainer == null || !GodotObject.IsInstanceValid(selectedContainer))
+            return;
+
+        ulong id = selectedContainer.GetInstanceId();
+        if (!SelectedHandContainerDefaultPositions.ContainsKey(id))
+            SelectedHandContainerDefaultPositions[id] = selectedContainer.Position;
+        if (!SelectedHandContainerDefaultScales.ContainsKey(id))
+            SelectedHandContainerDefaultScales[id] = selectedContainer.Scale;
+    }
+
+    private static void ClearCreatureIntentUi(NCreature creatureNode)
+    {
+        creatureNode.AnimHideIntent(0f);
+        ClearNodeChildren(creatureNode.IntentContainer);
+    }
+
+    private static void SnapEnemyCreatureNodesToSlots(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        Control? encounterSlots = GetPrivateFieldValue<Control>(combatRoom, "<EncounterSlots>k__BackingField")
+            ?? GetPrivateFieldValue<Control>(combatRoom, "EncounterSlots");
+        if (encounterSlots == null)
+            return;
+
+        foreach (Creature creature in combatState.Enemies)
+        {
+            if (string.IsNullOrWhiteSpace(creature.SlotName) || !encounterSlots.HasNode(creature.SlotName))
+                continue;
+
+            NCreature? node = combatRoom.GetCreatureNode(creature);
+            if (node == null)
+                continue;
+
+            node.GlobalPosition = encounterSlots.GetNode<Marker2D>(creature.SlotName).GlobalPosition;
+        }
+    }
+    private static void ClearTransientCardVisuals()
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom != null)
+        {
+            RemoveCardFlyVfxNodes(combatRoom.CombatVfxContainer);
+            ClearNodeChildren(combatRoom.Ui.CardPreviewContainer);
+            ClearNodeChildren(combatRoom.Ui.MessyCardPreviewContainer);
+        }
+
+        var globalUi = NRun.Instance?.GlobalUi;
+        if (globalUi == null)
+            return;
+
+        ClearNodeChildren(globalUi.CardPreviewContainer);
+        ClearNodeChildren(globalUi.MessyCardPreviewContainer);
+        ClearNodeChildren(globalUi.GridCardPreviewContainer);
+        ClearNodeChildren(globalUi.EventCardPreviewContainer);
+        RemoveCardFlyVfxNodes(globalUi.TopBar?.TrailContainer);
+    }
+
+    private static void RemoveCardFlyVfxNodes(Node? root)
+    {
+        if (root == null || !GodotObject.IsInstanceValid(root))
+            return;
+
+        foreach (Node child in root.GetChildren().Cast<Node>().ToList())
+        {
+            RemoveCardFlyVfxNodes(child);
+            if (child is not NCardFlyVfx flyVfx)
+                continue;
+
+            if (GetPrivateFieldValue<Node>(flyVfx, "_vfx") is { } trailVfx && GodotObject.IsInstanceValid(trailVfx))
+            {
+                trailVfx.GetParent()?.RemoveChild(trailVfx);
+                trailVfx.QueueFreeSafely();
+            }
+
+            if (GetPrivateFieldValue<NCard>(flyVfx, "_card") is { } cardNode && GodotObject.IsInstanceValid(cardNode))
+            {
+                cardNode.GetParent()?.RemoveChild(cardNode);
+                cardNode.QueueFreeSafely();
+            }
+
+            flyVfx.GetParent()?.RemoveChild(flyVfx);
+            flyVfx.QueueFreeSafely();
+        }
+    }
+
+    private void DetachPendingHandSelectionSource(NPlayerHand hand)
+    {
+        if (_pendingHandChoiceSource == null)
+            return;
+
+        MethodInfo? handlerMethod = FindMethod(hand.GetType(), "OnSelectModeSourceFinished");
+        if (handlerMethod == null)
+        {
+            _pendingHandChoiceSource = null;
+            return;
+        }
+
+        try
+        {
+            Action<AbstractModel> handler = (Action<AbstractModel>)handlerMethod.CreateDelegate(typeof(Action<AbstractModel>), hand);
+            _pendingHandChoiceSource.ExecutionFinished -= handler;
+        }
+        catch
+        {
+        }
+
+        _pendingHandChoiceSource = null;
+    }
+    private static void RestoreSelectedHandCardsToHand(NPlayerHand hand)
+    {
+        NSelectedHandCardContainer? selectedContainer = GetPrivateFieldValue<NSelectedHandCardContainer>(hand, "_selectedHandCardContainer")
+            ?? hand.GetNodeOrNull<NSelectedHandCardContainer>("%SelectedHandCardContainer");
+        if (selectedContainer == null || !GodotObject.IsInstanceValid(selectedContainer))
+            return;
+
+        foreach (NSelectedHandCardHolder selectedHolder in selectedContainer.Holders.ToList())
+        {
+            NCard? cardNode = selectedHolder.CardNode;
+            selectedHolder.GetParent()?.RemoveChild(selectedHolder);
+            selectedHolder.QueueFreeSafely();
+            if (cardNode == null || !GodotObject.IsInstanceValid(cardNode))
+                continue;
+
+            try
+            {
+                hand.Add(cardNode, -1);
+            }
+            catch
+            {
+                cardNode.GetParent()?.RemoveChild(cardNode);
+                cardNode.QueueFreeSafely();
+            }
+        }
+    }
+
+    private static void ResetSelectedHandCardContainerState(NPlayerHand hand)
+    {
+        NSelectedHandCardContainer? selectedContainer = GetPrivateFieldValue<NSelectedHandCardContainer>(hand, "_selectedHandCardContainer")
+            ?? hand.GetNodeOrNull<NSelectedHandCardContainer>("%SelectedHandCardContainer");
+        if (selectedContainer == null || !GodotObject.IsInstanceValid(selectedContainer))
+            return;
+
+        selectedContainer.Hand = hand;
+        ulong id = selectedContainer.GetInstanceId();
+        if (SelectedHandContainerDefaultPositions.TryGetValue(id, out Vector2 defaultPosition))
+            selectedContainer.Position = defaultPosition;
+        if (SelectedHandContainerDefaultScales.TryGetValue(id, out Vector2 defaultScale))
+            selectedContainer.Scale = defaultScale;
+        else
+            selectedContainer.Scale = Vector2.One;
+        selectedContainer.FocusMode = Control.FocusModeEnum.None;
+        ClearNodeChildren(selectedContainer);
+        InvokePrivateMethod(selectedContainer, "RefreshHolderPositions");
+        InvokePrivateMethod(hand, "UpdateSelectedCardContainer", 0);
+    }
+}
+

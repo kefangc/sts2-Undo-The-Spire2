@@ -209,7 +209,8 @@ internal static class UndoRuntimeStateCodecRegistry
 {
     private static readonly IReadOnlyList<IUndoCardRuntimeCodec> CardCodecs =
     [
-        new UpMySleeveCardCodec()
+        new UpMySleeveCardCodec(),
+        new ClawCardCodec()
     ];
 
     private static readonly IReadOnlyList<IUndoPowerRuntimeCodec> PowerCodecs =
@@ -354,6 +355,39 @@ internal static class UndoRuntimeStateCodecRegistry
         public override void Restore(CardModel card, UndoIntRuntimeComplexState state, UndoRuntimeRestoreContext context)
         {
             UndoReflectionUtil.TrySetFieldValue(card, "_timesPlayedThisCombat", state.Value);
+        }
+    }
+    private sealed class ClawCardCodec : UndoCardRuntimeCodec<UndoPairIntRuntimeComplexState>
+    {
+        public override string CodecId => "card:Claw.damageGrowth";
+
+        public override bool CanHandle(CardModel card)
+        {
+            return card is Claw;
+        }
+
+        public override UndoPairIntRuntimeComplexState? Capture(CardModel card, UndoRuntimeCaptureContext context)
+        {
+            if (card is not Claw claw)
+                return null;
+
+            decimal currentDamage = claw.DynamicVars.Damage.BaseValue;
+            decimal extraDamage = UndoReflectionUtil.FindField(claw.GetType(), "_extraDamageFromClawPlays")?.GetValue(claw) is decimal value ? value : 0m;
+            return new UndoPairIntRuntimeComplexState
+            {
+                CodecId = CodecId,
+                FirstValue = (int)extraDamage,
+                SecondValue = (int)currentDamage
+            };
+        }
+
+        public override void Restore(CardModel card, UndoPairIntRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (card is not Claw claw)
+                return;
+
+            UndoReflectionUtil.TrySetFieldValue(claw, "_extraDamageFromClawPlays", (decimal)state.FirstValue);
+            claw.DynamicVars.Damage.BaseValue = state.SecondValue;
         }
     }
 
