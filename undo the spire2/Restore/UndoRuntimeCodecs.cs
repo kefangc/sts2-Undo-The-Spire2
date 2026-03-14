@@ -1,3 +1,4 @@
+// 文件说明：恢复卡牌、能力、遗物等通用运行时属性。
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;

@@ -1,3 +1,4 @@
+// 文件说明：执行调试和回归场景，并驱动自动验证。
 using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;

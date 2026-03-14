@@ -1,3 +1,4 @@
+// 文件说明：实现 paused choice 等官方 action 的恢复 codec。
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;

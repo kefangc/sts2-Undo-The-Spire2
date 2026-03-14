@@ -1,3 +1,4 @@
+// 文件说明：保存 creature 的运行时状态快照。
 using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 

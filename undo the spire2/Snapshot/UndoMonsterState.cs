@@ -1,3 +1,4 @@
+// 文件说明：保存怪物意图和相关战斗状态。
 // Captures monster move-machine metadata that supplements official full state.
 // Sleep/stun/hover runtime booleans now live in CreatureStatusRuntimeState.
 using System.Collections.Generic;

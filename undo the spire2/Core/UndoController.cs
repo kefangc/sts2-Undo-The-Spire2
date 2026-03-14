@@ -1,3 +1,4 @@
+// 文件说明：协调撤销、重做、选牌分支和历史栈的主控制器。
 // Coordinates undo/redo history and restore transactions.
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;
@@ -1032,6 +1033,7 @@ public sealed partial class UndoController
             return false;
         }
         UndoDebugLog.Write($"primary_choice_restore_selected_key:{selectedKey} replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"}");
+        // 只有官方 paused action 已经被真正恢复到现场时，才能直接提交 live branch。
         if (stateAlreadyApplied && await TryCommitLiveChoiceBranchAsync(primarySession, selectedKey))
             return true;
 
@@ -1075,6 +1077,7 @@ public sealed partial class UndoController
             }
             case UndoChoiceKind.SimpleGridSelection:
             {
+                // 这里只负责把官方/合成选择界面重新打开，后续采用哪条提交路径由外层统一分流。
                 IReadOnlyList<CardModel> options = choiceSpec.BuildOptionCards(player);
                 NSimpleCardSelectScreen screen = NSimpleCardSelectScreen.Create(options, choiceSpec.SelectionPrefs);
                 NOverlayStack.Instance.Push(screen);
@@ -1722,6 +1725,7 @@ public sealed partial class UndoController
         if (choiceSpec?.Kind != UndoChoiceKind.SimpleGridSelection || choiceSpec.SourcePileType == null)
             return false;
 
+        // 计策在选牌后还会继续抽牌，直接套模板分支会把“被选中的牌”和“后续抽到的牌”重复保留下来。
         if (IsSourceChoice(choiceSpec, typeof(StratagemPower))
             && TryCreateStratagemCombatState(anchorSnapshot, templateSnapshot, selectedKey, out combatState))
         {
@@ -1800,6 +1804,7 @@ public sealed partial class UndoController
             .Select(index => ClonePacketSerializable(anchorDrawPileState.cards[index]))
             .ToList();
 
+        // 先从 anchor 的真实抽牌堆里移走这次新选的牌，后续抽牌必须基于这个修改后的堆顺序重建。
         HashSet<int> removedDrawIndexes = [.. selectedSourceIndexes];
         List<NetFullCombatState.CardState> drawAfterSelection = [];
         for (int i = 0; i < anchorDrawPileState.cards.Count; i++)
@@ -1808,6 +1813,7 @@ public sealed partial class UndoController
                 drawAfterSelection.Add(ClonePacketSerializable(anchorDrawPileState.cards[i]));
         }
 
+        // 模板分支只负责提供“选牌后官方还继续抽了多少张”，不再直接复用模板里的最终手牌内容。
         int cardsDrawnAfterChoice = templateHandPileState.cards.Count - anchorHandPileState.cards.Count - selectedCardStates.Count;
         if (cardsDrawnAfterChoice < 0 || cardsDrawnAfterChoice > drawAfterSelection.Count)
             return false;

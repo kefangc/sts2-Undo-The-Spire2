@@ -1,4 +1,5 @@
-﻿using HarmonyLib;
+// 文件说明：挂接官方 replay 与 checksum 记录。
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;

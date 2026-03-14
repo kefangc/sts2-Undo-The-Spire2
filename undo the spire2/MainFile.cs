@@ -1,3 +1,4 @@
+// 文件说明：Mod 入口，负责注册补丁并初始化撤销控制器。
 using System.Reflection;
 using Godot;
 using HarmonyLib;

@@ -1,3 +1,4 @@
+// 文件说明：把完整快照恢复到当前战斗，并重建同步边界。
 // Coordinates undo/redo history and restore transactions.
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;

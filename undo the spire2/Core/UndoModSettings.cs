@@ -1,3 +1,4 @@
+// 文件说明：定义 mod 设置项及其读取逻辑。
 using System.Text.Json;
 
 namespace UndoTheSpire2;

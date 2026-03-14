@@ -1,3 +1,4 @@
+// 文件说明：捕获和恢复 creature 的状态型运行时数据。
 using System;
 using System.Collections.Generic;
 using System.Linq;

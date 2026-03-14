@@ -1,3 +1,4 @@
+// 文件说明：捕获战斗完整快照和运行时补充状态。
 // Coordinates undo/redo history and restore transactions.
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;

@@ -1,3 +1,4 @@
+// 文件说明：在官方 action 流程里挂接 choice 与快照捕获。
 using HarmonyLib;
 using MegaCrit.Sts2.Core.GameActions;
 

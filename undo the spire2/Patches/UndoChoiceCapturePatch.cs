@@ -1,3 +1,4 @@
+// 文件说明：在官方选牌入口处记录可恢复的 choice 元数据。
 using HarmonyLib;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;

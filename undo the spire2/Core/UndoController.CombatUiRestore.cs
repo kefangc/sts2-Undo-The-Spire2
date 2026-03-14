@@ -1,3 +1,4 @@
+// 文件说明：恢复战斗 UI、手牌和视觉层状态。
 // Coordinates undo/redo history and restore transactions.
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;

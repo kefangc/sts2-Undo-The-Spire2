@@ -1,3 +1,4 @@
+// 文件说明：描述一次可恢复 choice 的选项来源与结果映射规则。
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -135,6 +136,7 @@ internal sealed class UndoChoiceSpec
         HashSet<NetCombatCard> eligibleCombatCards = [.. SourcePileCombatCards];
         if (eligibleCombatCards.Count > 0)
         {
+            // 手牌在多次 undo 后位置可能变化，优先按 NetCombatCard 身份匹配，避免 index 漂移。
             return card => eligibleCombatCards.Contains(NetCombatCard.FromModel(card));
         }
 
@@ -195,6 +197,7 @@ internal sealed class UndoChoiceSpec
             return Kind == UndoChoiceKind.ChooseACard ? new UndoChoiceResultKey([-1]) : new UndoChoiceResultKey([]);
         }
 
+        // 对重新打开的 UI，分支键必须按“当前屏幕展示顺序”计算，不能回退到旧 pile index。
         List<int> mappedIndexes = [];
         foreach (CardModel card in cards)
         {

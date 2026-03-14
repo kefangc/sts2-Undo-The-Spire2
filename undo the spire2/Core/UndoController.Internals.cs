@@ -1,3 +1,4 @@
+// 文件说明：集中放置反射、克隆和内部工具函数。
 // Coordinates undo/redo history and restore transactions.
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;

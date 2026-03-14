@@ -1,3 +1,4 @@
+// 文件说明：捕获官方 action queue、paused choice 和执行边界的内核状态。
 using System.Reflection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;

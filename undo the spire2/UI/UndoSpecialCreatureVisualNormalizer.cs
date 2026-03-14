@@ -1,3 +1,4 @@
+// 文件说明：修正特殊 creature 在恢复后的视觉表现。
 using System;
 using System.Collections.Generic;
 using System.Linq;

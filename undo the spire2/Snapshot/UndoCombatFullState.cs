@@ -1,3 +1,4 @@
+// 文件说明：封装一次完整战斗快照及其补充运行时信息。
 // Represents the mod-owned combat save-state kernel layered above NetFullCombatState.
 // It aggregates official state, history, runtime graph, action kernel, and topology supplements.
 using System.Collections.Generic;

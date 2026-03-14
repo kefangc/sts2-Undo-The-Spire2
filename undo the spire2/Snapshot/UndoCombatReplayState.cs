@@ -1,4 +1,5 @@
-﻿using MegaCrit.Sts2.Core.Multiplayer.Replay;
+// 文件说明：保存 replay 事件、choice 分支与 checksum 数据。
+using MegaCrit.Sts2.Core.Multiplayer.Replay;
 using MegaCrit.Sts2.Core.Saves;
 
 namespace UndoTheSpire2;
