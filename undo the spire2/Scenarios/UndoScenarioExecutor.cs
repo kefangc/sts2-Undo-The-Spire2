@@ -893,6 +893,7 @@ internal static class UndoScenarioExecutor
                 Payload = state.Payload switch
                 {
                     UndoBoolCreatureStatusRuntimePayload boolPayload => (object?)new { boolPayload.CodecId, boolPayload.Value },
+                    UndoIntCreatureStatusRuntimePayload intPayload => (object?)new { intPayload.CodecId, intPayload.Value },
                     UndoCreatureStatusRuntimePayload payload => (object?)new { payload.CodecId },
                     _ => null
                 }

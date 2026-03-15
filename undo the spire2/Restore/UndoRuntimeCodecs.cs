@@ -217,6 +217,7 @@ internal static class UndoRuntimeStateCodecRegistry
     private static readonly IReadOnlyList<IUndoPowerRuntimeCodec> PowerCodecs =
     [
         new AutomationCardsLeftPowerCodec(),
+        new JugglingAttacksPlayedPowerCodec(),
         new VitalSparkTriggeredPlayersPowerCodec(),
         new AfterimagePlayedCardsPowerCodec(),
         new NightmareSelectedCardPowerCodec(),
@@ -421,6 +422,39 @@ internal static class UndoRuntimeStateCodecRegistry
                 return;
 
             UndoReflectionUtil.TrySetFieldValue(internalData, "cardsLeft", state.Value);
+            InvokeDisplayAmountChanged(power);
+        }
+    }
+
+    private sealed class JugglingAttacksPlayedPowerCodec : UndoPowerRuntimeCodec<UndoIntRuntimeComplexState>
+    {
+        public override string CodecId => "power:JugglingPower.attacksPlayedThisTurn";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is JugglingPower;
+        }
+
+        public override UndoIntRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            object? internalData = GetPowerInternalData(power);
+            if (internalData == null || UndoReflectionUtil.FindField(internalData.GetType(), "attacksPlayedThisTurn")?.GetValue(internalData) is not int attacksPlayedThisTurn)
+                return null;
+
+            return new UndoIntRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Value = attacksPlayedThisTurn
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoIntRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            object? internalData = GetPowerInternalData(power);
+            if (internalData == null)
+                return;
+
+            UndoReflectionUtil.TrySetFieldValue(internalData, "attacksPlayedThisTurn", state.Value);
             InvokeDisplayAmountChanged(power);
         }
     }

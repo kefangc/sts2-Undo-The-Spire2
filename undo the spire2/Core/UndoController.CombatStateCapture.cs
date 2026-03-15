@@ -357,6 +357,10 @@ public sealed partial class UndoController
                     StolenCard = power is SwipePower swipe && swipe.StolenCard != null
                         ? ClonePacketSerializable(swipe.StolenCard.ToSerializable())
                         : null,
+                    StolenCardDeckVersion = power is SwipePower swipeWithDeckVersion
+                        && swipeWithDeckVersion.StolenCard?.DeckVersion != null
+                            ? ClonePacketSerializable(swipeWithDeckVersion.StolenCard.DeckVersion.ToSerializable())
+                            : null,
                     TriggeredPlayerNetIds = CaptureTriggeredPlayerNetIds(power),
                     BoolProperties = CapturePowerRuntimeBoolProperties(power),
                     IntProperties = CaptureRuntimeIntProperties(power, "Amount"),

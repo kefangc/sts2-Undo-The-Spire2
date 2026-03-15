@@ -457,7 +457,15 @@ public sealed partial class UndoController
         }
 
         fullState.Players[playerIndex] = branchPlayerState;
-        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
+        UndoCombatFullState derivedCombatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
+        combatState = ApplySourceSelectionSupplementalOverrides(
+            derivedCombatState,
+            anchorSnapshot.CombatState,
+            templateSnapshot.CombatState.FullState.Players[playerIndex],
+            anchorPlayerState.playerId,
+            sourcePileType,
+            selectedSourceIndexes,
+            destinationSlots);
         return true;
     }
 
@@ -527,8 +535,137 @@ public sealed partial class UndoController
         }
 
         fullState.Players[playerIndex] = branchPlayerState;
-        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
+        UndoCombatFullState derivedCombatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
+        if (TryFindSourceSelectionDestinationSlots(
+                anchorPlayerState,
+                templatePlayerState,
+                sourcePileType,
+                templateSelectedCardStates,
+                out List<(int PileIndex, int CardIndex, int TemplateSelectionIndex)> destinationSlots))
+        {
+            combatState = ApplySourceSelectionSupplementalOverrides(
+                derivedCombatState,
+                anchorSnapshot.CombatState,
+                templatePlayerState,
+                anchorPlayerState.playerId,
+                sourcePileType,
+                selectedSourceIndexes,
+                destinationSlots);
+        }
+        else
+        {
+            combatState = derivedCombatState;
+        }
+
         return true;
+    }
+
+    // 对“从某个 pile 选牌并把原牌实例移动到别处”的分支，选中的牌应继续携带自己
+    // 的费用和 runtime 状态，而不是复用模板分支目标槽位上原来那张牌的补充状态。
+    private static UndoCombatFullState ApplySourceSelectionSupplementalOverrides(
+        UndoCombatFullState derivedCombatState,
+        UndoCombatFullState anchorCombatState,
+        NetFullCombatState.PlayerState templatePlayerState,
+        ulong playerNetId,
+        PileType sourcePileType,
+        IReadOnlyList<int> selectedSourceIndexes,
+        IReadOnlyList<(int PileIndex, int CardIndex, int TemplateSelectionIndex)> destinationSlots)
+    {
+        IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardCostState>>? anchorCostStatesByPile = GetCardCostStatesForPlayer(anchorCombatState, playerNetId);
+        IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? anchorRuntimeStatesByPile = GetCardRuntimeStatesForPlayer(anchorCombatState, playerNetId);
+        IReadOnlyList<UndoCardCostState>? sourceCostStates = null;
+        IReadOnlyList<UndoCardRuntimeState>? sourceRuntimeStates = null;
+        anchorCostStatesByPile?.TryGetValue(sourcePileType, out sourceCostStates);
+        anchorRuntimeStatesByPile?.TryGetValue(sourcePileType, out sourceRuntimeStates);
+        if ((sourceCostStates == null || sourceCostStates.Count == 0) && (sourceRuntimeStates == null || sourceRuntimeStates.Count == 0))
+            return derivedCombatState;
+
+        Dictionary<PileType, Dictionary<int, UndoCardCostState>> costOverridesByPile = [];
+        Dictionary<PileType, Dictionary<int, UndoCardRuntimeState>> runtimeOverridesByPile = [];
+        foreach ((int pileIndex, int cardIndex, int templateSelectionIndex) in destinationSlots)
+        {
+            if (templateSelectionIndex < 0 || templateSelectionIndex >= selectedSourceIndexes.Count)
+                continue;
+
+            int sourceIndex = selectedSourceIndexes[templateSelectionIndex];
+            PileType destinationPileType = templatePlayerState.piles[pileIndex].pileType;
+            if (sourceCostStates != null && sourceIndex >= 0 && sourceIndex < sourceCostStates.Count)
+            {
+                if (!costOverridesByPile.TryGetValue(destinationPileType, out Dictionary<int, UndoCardCostState>? pileOverrides))
+                {
+                    pileOverrides = [];
+                    costOverridesByPile[destinationPileType] = pileOverrides;
+                }
+
+                pileOverrides[cardIndex] = sourceCostStates[sourceIndex];
+            }
+
+            if (sourceRuntimeStates != null && sourceIndex >= 0 && sourceIndex < sourceRuntimeStates.Count)
+            {
+                if (!runtimeOverridesByPile.TryGetValue(destinationPileType, out Dictionary<int, UndoCardRuntimeState>? pileOverrides))
+                {
+                    pileOverrides = [];
+                    runtimeOverridesByPile[destinationPileType] = pileOverrides;
+                }
+
+                pileOverrides[cardIndex] = sourceRuntimeStates[sourceIndex];
+            }
+        }
+
+        if (costOverridesByPile.Count == 0 && runtimeOverridesByPile.Count == 0)
+            return derivedCombatState;
+
+        List<UndoPlayerPileCardCostState> updatedCostStates = [];
+        foreach (UndoPlayerPileCardCostState pileState in derivedCombatState.CardCostStates)
+        {
+            if (pileState.PlayerNetId != playerNetId
+                || !costOverridesByPile.TryGetValue(pileState.PileType, out Dictionary<int, UndoCardCostState>? pileOverrides))
+            {
+                updatedCostStates.Add(pileState);
+                continue;
+            }
+
+            List<UndoCardCostState> cards = [.. pileState.Cards];
+            foreach ((int cardIndex, UndoCardCostState costState) in pileOverrides)
+            {
+                if (cardIndex >= 0 && cardIndex < cards.Count)
+                    cards[cardIndex] = costState;
+            }
+
+            updatedCostStates.Add(new UndoPlayerPileCardCostState
+            {
+                PlayerNetId = pileState.PlayerNetId,
+                PileType = pileState.PileType,
+                Cards = cards
+            });
+        }
+
+        List<UndoPlayerPileCardRuntimeState> updatedRuntimeStates = [];
+        foreach (UndoPlayerPileCardRuntimeState pileState in derivedCombatState.CardRuntimeStates)
+        {
+            if (pileState.PlayerNetId != playerNetId
+                || !runtimeOverridesByPile.TryGetValue(pileState.PileType, out Dictionary<int, UndoCardRuntimeState>? pileOverrides))
+            {
+                updatedRuntimeStates.Add(pileState);
+                continue;
+            }
+
+            List<UndoCardRuntimeState> cards = [.. pileState.Cards];
+            foreach ((int cardIndex, UndoCardRuntimeState runtimeState) in pileOverrides)
+            {
+                if (cardIndex >= 0 && cardIndex < cards.Count)
+                    cards[cardIndex] = runtimeState;
+            }
+
+            updatedRuntimeStates.Add(new UndoPlayerPileCardRuntimeState
+            {
+                PlayerNetId = pileState.PlayerNetId,
+                PileType = pileState.PileType,
+                Cards = cards
+            });
+        }
+
+        return CreateDerivedCombatState(derivedCombatState, derivedCombatState.FullState, updatedCostStates, updatedRuntimeStates);
     }
 
     private static bool TryApplyVariableCountSourceSelectionDestinationPattern(

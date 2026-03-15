@@ -201,11 +201,31 @@ public sealed partial class UndoController
 
     private static bool ShouldUseChoiceAnchorReplay(PausedChoiceState pausedChoiceState)
     {
+        // choose-a-card 这类三选一在 replay 路径下会先恢复一遍 full-state，再让原 action 继续跑。
+        // 对药水等 UsePotionAction 来源，这会把已经脱离队列的 action 恢复成“活着”的 paused action，
+        // 后续 undo 时就可能出现 pop 不到队列、选择界面叠层和选项重掷。
+        if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:choose-a-card", StringComparison.Ordinal))
+            return false;
+
+        // simple-grid 类选牌即使能 replay 回到 choice 点，也会先经历一轮 full-state
+        // 还原，体感上会闪黑。对这类选择优先走直接 reopen + 分支提交。
+        if (pausedChoiceState.ChoiceKind == UndoChoiceKind.SimpleGridSelection)
+            return false;
+
         if (string.Equals(pausedChoiceState.ChoiceSpec?.SourceModelTypeName, typeof(EntropyPower).FullName, StringComparison.Ordinal))
             return false;
 
         if (string.Equals(pausedChoiceState.ChoiceSpec?.SourceModelTypeName, typeof(StratagemPower).FullName, StringComparison.Ordinal))
             return false;
+
+        // Toolbox 的 choose-a-card 挂在 hook-choice 下面，但它后续只需要让官方把
+        // 选中的牌 AddGeneratedCardToCombat。这里保留 replay，能恢复到真正活着的
+        // paused action，避免后面再退回纯合成分支时因为没有模板 branch 而卡住。
+        if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:hook-choice", StringComparison.Ordinal)
+            && string.Equals(pausedChoiceState.ChoiceSpec?.SourceModelTypeName, "MegaCrit.Sts2.Core.Models.Relics.Toolbox", StringComparison.Ordinal))
+        {
+            return true;
+        }
 
         if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:hook-choice", StringComparison.Ordinal))
             return false;
@@ -504,6 +524,39 @@ public sealed partial class UndoController
     {
         foreach (UndoChoiceBranchState branchState in branchStates)
             session.RememberBranch(branchState.ChoiceResultKey, MaterializeChoiceBranchSnapshot(branchState), preferAsTemplate: false);
+    }
+
+    private void TryPersistImmediateChoiceBranchSnapshot(UndoSnapshot snapshot)
+    {
+        if (_lastResolvedChoiceResultKey == null)
+            return;
+
+        LinkedListNode<UndoSnapshot>? anchorNode = _pastSnapshots.First?.Next;
+        if (anchorNode?.Value.IsChoiceAnchor != true
+            || !IsSupportedChoiceAnchorKind(anchorNode.Value.ChoiceSpec)
+            || snapshot.ReplayEventCount < anchorNode.Value.ReplayEventCount)
+        {
+            return;
+        }
+
+        UndoSnapshot branchSnapshot = new(
+            snapshot.CombatState,
+            snapshot.ReplayEventCount,
+            snapshot.ActionKind,
+            snapshot.SequenceId,
+            snapshot.ActionLabel,
+            choiceResultKey: _lastResolvedChoiceResultKey);
+        Dictionary<UndoChoiceResultKey, UndoChoiceBranchState> savedBranches = anchorNode.Value.CombatState.ChoiceBranchStates
+            .ToDictionary(static branch => branch.ChoiceResultKey, static branch => branch);
+        savedBranches[_lastResolvedChoiceResultKey] = CaptureChoiceBranchState(branchSnapshot);
+        anchorNode.Value = new UndoSnapshot(
+            WithChoiceBranchStates(anchorNode.Value.CombatState, [.. savedBranches.Values.OrderBy(static branch => branch.ReplayEventCount)]),
+            anchorNode.Value.ReplayEventCount,
+            anchorNode.Value.ActionKind,
+            anchorNode.Value.SequenceId,
+            anchorNode.Value.ActionLabel,
+            isChoiceAnchor: true,
+            choiceSpec: anchorNode.Value.ChoiceSpec);
     }
 
     private IReadOnlyList<UndoChoiceBranchState> CaptureSavedChoiceBranchStates(UndoSyntheticChoiceSession session)

@@ -151,6 +151,13 @@ internal sealed class UndoChoiceSpec
 
     public IReadOnlyList<CardModel> BuildOptionCards(Player player)
     {
+        if (Kind == UndoChoiceKind.SimpleGridSelection
+            && SourcePileType is PileType sourcePileType
+            && TryBuildLiveSourcePileOptionCards(player, sourcePileType, out List<CardModel>? liveOptions))
+        {
+            return liveOptions;
+        }
+
         List<CardModel> options = [];
         foreach (SerializableCard optionCard in OptionCards)
         {
@@ -162,6 +169,11 @@ internal sealed class UndoChoiceSpec
         }
 
         return options;
+    }
+
+    public IReadOnlyList<CardModel> BuildDisplayedOptionCards(Player player)
+    {
+        return BuildOptionCards(player);
     }
 
     public UndoChoiceResultKey? TryMapReplayResult(NetPlayerChoiceResult result)
@@ -336,6 +348,53 @@ internal sealed class UndoChoiceSpec
         }
 
         return sourcePileType;
+    }
+
+    private bool TryBuildLiveSourcePileOptionCards(Player player, PileType sourcePileType, out List<CardModel>? options)
+    {
+        options = null;
+        IReadOnlyList<CardModel> sourceCards = sourcePileType.GetPile(player).Cards;
+        if (SourcePileCombatCards.Count > 0)
+        {
+            List<CardModel> liveOptions = [];
+            bool[] usedSourceIndexes = new bool[sourceCards.Count];
+            foreach (NetCombatCard combatCard in SourcePileCombatCards)
+            {
+                int matchedIndex = -1;
+                for (int i = 0; i < sourceCards.Count; i++)
+                {
+                    if (usedSourceIndexes[i] || !combatCard.Equals(NetCombatCard.FromModel(sourceCards[i])))
+                        continue;
+
+                    matchedIndex = i;
+                    usedSourceIndexes[i] = true;
+                    break;
+                }
+
+                if (matchedIndex < 0)
+                    return false;
+
+                liveOptions.Add(sourceCards[matchedIndex]);
+            }
+
+            options = liveOptions;
+            return true;
+        }
+
+        if (SourcePileOptionIndexes.Count == 0)
+            return false;
+
+        List<CardModel> indexedOptions = [];
+        foreach (int sourceIndex in SourcePileOptionIndexes)
+        {
+            if (sourceIndex < 0 || sourceIndex >= sourceCards.Count)
+                return false;
+
+            indexedOptions.Add(sourceCards[sourceIndex]);
+        }
+
+        options = indexedOptions;
+        return true;
     }
 
     private static int IndexOfReference(IReadOnlyList<CardModel> cards, CardModel target)

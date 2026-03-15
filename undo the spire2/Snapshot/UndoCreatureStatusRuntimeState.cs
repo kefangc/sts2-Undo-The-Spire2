@@ -25,6 +25,11 @@ internal sealed class UndoBoolCreatureStatusRuntimePayload : UndoCreatureStatusR
     public bool Value { get; init; }
 }
 
+internal sealed class UndoIntCreatureStatusRuntimePayload : UndoCreatureStatusRuntimePayload
+{
+    public int Value { get; init; }
+}
+
 internal sealed class UndoCreatureStatusRestoreContext
 {
     public required IReadOnlyDictionary<string, Creature> CreaturesByKey { get; init; }

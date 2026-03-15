@@ -1252,6 +1252,14 @@ public sealed partial class UndoController
                 CardModel stolenCard = CardModel.FromSerializable(ClonePacketSerializable(runtimeState.StolenCard));
                 if (power.Target?.Player != null)
                     stolenCard.Owner = power.Target.Player;
+                if (runtimeState.StolenCardDeckVersion != null)
+                {
+                    CardModel deckVersion = CardModel.FromSerializable(ClonePacketSerializable(runtimeState.StolenCardDeckVersion));
+                    if (power.Target?.Player != null)
+                        deckVersion.Owner = power.Target.Player;
+
+                    stolenCard.DeckVersion = deckVersion;
+                }
                 swipe.StolenCard = stolenCard;
             }
         }

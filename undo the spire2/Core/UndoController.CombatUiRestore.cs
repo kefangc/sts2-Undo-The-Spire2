@@ -434,10 +434,51 @@ public sealed partial class UndoController
     }
     private static void RefreshCombatPileCounts(NCombatUi ui, Player player)
     {
+        RefreshTopBarDeckCount(player);
         RefreshCombatPileCount(ui.DrawPile, PileType.Draw.GetPile(player).Cards.Count);
         RefreshCombatPileCount(ui.DiscardPile, PileType.Discard.GetPile(player).Cards.Count);
         RefreshCombatPileCount(ui.ExhaustPile, PileType.Exhaust.GetPile(player).Cards.Count);
     }
+
+    private static void RefreshTopBarDeckCount(Player player)
+    {
+        var deckButton = NRun.Instance?.GlobalUi?.TopBar?.Deck;
+        CardPile deckPile = PileType.Deck.GetPile(player);
+        if (deckButton == null || deckPile == null)
+            return;
+
+        CardPile? previousPile = GetPrivateFieldValue<CardPile>(deckButton, "_pile");
+        if (!ReferenceEquals(previousPile, deckPile))
+        {
+            MethodInfo? onPileContentsChangedMethod = FindMethod(deckButton.GetType(), "OnPileContentsChanged");
+            System.Action? onPileContentsChanged = onPileContentsChangedMethod == null
+                ? null
+                : System.Delegate.CreateDelegate(typeof(System.Action), deckButton, onPileContentsChangedMethod, false) as System.Action;
+            if (onPileContentsChanged != null)
+            {
+                if (previousPile != null)
+                {
+                    previousPile.CardAddFinished -= onPileContentsChanged;
+                    previousPile.CardRemoveFinished -= onPileContentsChanged;
+                }
+
+                deckPile.CardAddFinished -= onPileContentsChanged;
+                deckPile.CardRemoveFinished -= onPileContentsChanged;
+                deckPile.CardAddFinished += onPileContentsChanged;
+                deckPile.CardRemoveFinished += onPileContentsChanged;
+            }
+
+            SetPrivateFieldValue(deckButton, "_player", player);
+            SetPrivateFieldValue(deckButton, "_pile", deckPile);
+        }
+
+        SetPrivateFieldValue(deckButton, "_count", (float)deckPile.Cards.Count);
+        GetPrivateFieldValue<object>(deckButton, "_countLabel")
+            ?.GetType()
+            .GetMethod("SetTextAutoSize", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?.Invoke(GetPrivateFieldValue<object>(deckButton, "_countLabel"), [deckPile.Cards.Count.ToString()]);
+    }
+
     private static void RefreshCombatPileCount(Node pileNode, int count)
     {
         SetPrivateFieldValue(pileNode, "_currentCount", count);

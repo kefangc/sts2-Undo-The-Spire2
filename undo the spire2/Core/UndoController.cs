@@ -1253,6 +1253,8 @@ public sealed partial class UndoController
             _pastSnapshots.AddFirst(snapshot);
             TrimSnapshots(_pastSnapshots);
             _futureSnapshots.Clear();
+            if (!isChoiceAnchor)
+                TryPersistImmediateChoiceBranchSnapshot(snapshot);
             MainFile.Logger.Info($"Captured snapshot #{snapshot.SequenceId}: {snapshot.ActionLabel}. ReplayEvents={snapshot.ReplayEventCount}, UndoCount={_pastSnapshots.Count}");
             UndoDebugLog.Write($"snapshot captured seq={snapshot.SequenceId} label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} undoCount={_pastSnapshots.Count}");
             NotifyStateChanged();
@@ -1596,11 +1598,12 @@ public sealed partial class UndoController
         _syntheticChoiceSession = null;
 
         bool removedOverlay = false;
-        if (NOverlayStack.Instance?.Peek() is IOverlayScreen choiceScreen
+        while (NOverlayStack.Instance?.Peek() is IOverlayScreen choiceScreen
             && choiceScreen is NChooseACardSelectionScreen or NCardGridSelectionScreen)
         {
             RemoveChoiceOverlaySafely(choiceScreen);
             removedOverlay = true;
+            await WaitOneFrameAsync();
         }
 
         NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;

@@ -320,7 +320,7 @@ public sealed partial class UndoController
 
     private static async Task<UndoChoiceResultKey?> ShowSyntheticSimpleGridAsync(UndoChoiceSpec choiceSpec, Player me)
     {
-        IReadOnlyList<CardModel> options = choiceSpec.BuildOptionCards(me);
+        IReadOnlyList<CardModel> options = choiceSpec.BuildDisplayedOptionCards(me);
         NSimpleCardSelectScreen screen = NSimpleCardSelectScreen.Create(options, choiceSpec.SelectionPrefs);
         NOverlayStack.Instance.Push(screen);
         IEnumerable<CardModel> selected = await screen.CardsSelected();
