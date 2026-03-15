@@ -1,6 +1,7 @@
 # Visual Studio / Rider
 .vs/
 .idea/
+.vscode/
 *.suo
 *.user
 *.userosscache
@@ -10,18 +11,29 @@
 # .NET build outputs
 bin/
 obj/
+Debug/
+Release/
 TestResults/
 
 # Godot generated state
 .godot/
 .mono/
 *.import
+*.uid
+mono_crash.*.json
+export_credentials.cfg
 
 # Debug / profiling artifacts
 *.log
 *.pidb
 *.mdb
+*.tmp
+*.temp
+*.cache
+*.bak
+*.orig
 
 # OS junk
 Thumbs.db
 Desktop.ini
+.DS_Store
